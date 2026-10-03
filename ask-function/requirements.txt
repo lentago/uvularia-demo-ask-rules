@@ -1,0 +1,12 @@
+# The Ask function's only dependencies.
+#
+# mitchella is the engine; it is pinned by git commit so a build is reproducible
+# and the box's behaviour never shifts under you without a change here (mitchella
+# cuts no release tags yet, so a commit sha is the pin). anthropic is its model
+# client. boto3 is part of the AWS Lambda runtime and is deliberately NOT listed
+# — do not vendor it.
+#
+# To advance the engine: bump the sha below, rebuild, and redeploy.
+
+mitchella @ git+https://github.com/lentago/mitchella@7509000872ac7a1350c75f1dc2bc4fa996420011
+anthropic>=1.0
