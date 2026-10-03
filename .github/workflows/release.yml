@@ -1,0 +1,55 @@
+# ============================================================================
+# release — on merge to main, cut a rules-vN release your Ask function pins
+# ============================================================================
+# Tags the merge commit `rules-v<N>` (the next integer after the highest existing
+# rules-v* tag) and publishes policy.yaml and instructions.md as the release
+# assets the Ask function downloads at a fixed version. The function advances only
+# when a newer release exists; rolling back is pinning the previous rules-vN.
+#
+# A release is the unit of "this is how the box behaves now" — frozen, versioned,
+# and reversible. One is cut on every merge so the pinned version always matches
+# main.
+# ============================================================================
+
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write   # create the tag and the release
+
+concurrency:
+  group: rules-release   # one release at a time, so the version never races
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need the tag history to compute the next version
+
+      - name: Compute the next rules version
+        id: version
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet
+          latest="$(git tag -l 'rules-v*' | sed 's/^rules-v//' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)"
+          next=$(( ${latest:-0} + 1 ))
+          echo "tag=rules-v${next}" >> "$GITHUB_OUTPUT"
+          echo "Next release: rules-v${next}"
+
+      - name: Create the release with the pinned assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            policy.yaml instructions.md \
+            --title "$TAG" \
+            --target "$GITHUB_SHA" \
+            --notes "Rules release pinned by the Ask function. Assets: policy.yaml, instructions.md. Roll back by pinning the previous rules-vN."

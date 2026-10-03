@@ -1,0 +1,32 @@
+# Declared incidents — the manual override channel for your Ask box.
+#
+# This is the lowest-technology input to the box and the highest-value one. When
+# something has changed that the records do not yet reflect — a meeting
+# postponed, a trail closed, a notice withdrawn — you declare it here, and the
+# next question that mentions one of the `subjects` leads with your notice
+# instead of a routine answer from the records. One file, one pull request, live
+# on the next release.
+#
+# `subjects` are matched as plain substrings against the question text, so keep
+# them short and characteristic. A missed match degrades to a normal records
+# answer; a false match tells a reader something is wrong when it is not — which
+# is worse — so prefer specific subjects over broad ones.
+#
+# Delete the block or set `open = false` when it is over. Nothing expires this
+# for you. This file ships empty: an empty desk is the normal case.
+#
+# The box's compliance signals — a posting obligation in breach — come from the
+# vault's published standing.json automatically and are not declared here. This
+# file is for the human-in-the-loop override: what you know before the records
+# do.
+
+# Uncomment and edit to declare one. Copy the block for a second.
+#
+# [[incident]]
+# id       = "2026-10-20-annual-meeting"
+# title    = "Annual meeting postponed to November 3"
+# status   = "scheduled"
+# open     = true
+# subjects = ["annual meeting", "annual-meeting"]
+# detail   = "The October 20 annual meeting is postponed. The new notice is posted."
+# url      = "https://your-org.github.io/your-org-records/"

@@ -1,0 +1,140 @@
+# ============================================================================
+# evals — gate every pull request on the golden question set
+# ============================================================================
+# Runs evals/run.py against your CURRENTLY PUBLISHED corpus on every pull request
+# and posts, as a comment, the prompt diff (what changed in instructions.md and
+# policy.yaml) and the answer diff (what the box now does with each golden
+# question).
+#
+#   * Dry mode always runs. It is stdlib-only, needs no API key, and must come
+#     back clean — it checks that every required citation exists, that each
+#     expected outcome is consistent, and that each subject maps to a record.
+#   * Live mode runs only when the MITCHELLA_API_KEY secret is set. It installs
+#     the engine, asks every golden question for real, and fails below the
+#     threshold in policy.yaml.
+#
+# Deliberately NOT path-filtered. If this is a required status check, a run that
+# never triggers is held "Expected" forever and deadlocks every PR that did not
+# touch the filtered paths (the fleet's required-checks rule). Dry mode finishes
+# in seconds.
+# ============================================================================
+
+name: evals
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write   # to post the prompt/answer diff as a comment
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    env:
+      MITCHELLA_API_KEY: ${{ secrets.MITCHELLA_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the prompt diff compares against the base ref
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Harness self-tests (the hard gate; needs no vault)
+        run: python3 -m unittest discover -s evals/tests -p "test_*.py"
+
+      - name: Dry run the golden set against the published corpus
+        id: dry
+        continue-on-error: true   # captured below so the comment still posts; the job fails at the end
+        run: |
+          set +e
+          python3 evals/run.py --mode dry --report dry-report.md 2>&1 | tee dry.txt
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" = "3" ]; then
+            echo "corpus=missing" >> "$GITHUB_OUTPUT"   # fresh repo: nothing published yet; a notice, not a failure
+            exit 0
+          fi
+          echo "corpus=present" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      - name: Install the engine for the live run
+        if: env.MITCHELLA_API_KEY != ''
+        run: pip install --quiet "mitchella @ git+https://github.com/lentago/mitchella" anthropic
+
+      - name: Live run the golden set (only when a key is configured)
+        id: live
+        if: env.MITCHELLA_API_KEY != ''
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.MITCHELLA_API_KEY }}
+        run: python3 evals/run.py --mode live --report live-report.md
+
+      - name: Build the PR comment (prompt diff + answer diff)
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import pathlib, subprocess, os
+          base = os.environ.get("GITHUB_BASE_REF", "")
+          lines = ["<!-- uvularia-evals -->", "## Ask-box evals", ""]
+
+          dry_ok = "${{ steps.dry.outcome }}" == "success"
+          corpus_missing = "${{ steps.dry.outputs.corpus }}" == "missing"
+          if corpus_missing:
+              lines.append("ℹ️ **No published corpus yet** — the golden set is checked once your "
+                           "records vault has published and `published_base` in policy.yaml points at it. "
+                           "The harness self-tests passed.")
+          else:
+              lines.append("✅ **Dry checks passed.**" if dry_ok
+                           else "❌ **Dry checks failed.** Nothing ships until this is green.")
+
+          # The prompt diff: what changed in the files that shape every answer.
+          shaping = ["instructions.md", "policy.yaml", "signals/incidents.toml"]
+          diff = ""
+          if base:
+              diff = subprocess.run(
+                  ["git", "diff", f"origin/{base}...HEAD", "--", *shaping],
+                  capture_output=True, text=True).stdout
+          lines += ["", "### Prompt diff", ""]
+          lines += (["```diff", diff.strip(), "```"] if diff.strip()
+                    else ["_No change to the instructions, policy, or incidents._"])
+
+          # The answer diff: what the box now does with each golden question.
+          lines += ["", "### Answers", ""]
+          for name, label in (("live-report.md", "live"), ("dry-report.md", "dry")):
+              p = pathlib.Path(name)
+              if p.exists():
+                  body = p.read_text().split("\n", 2)[-1]  # drop the report's own marker/title
+                  lines.append(body.strip())
+                  break
+          pathlib.Path("comment.md").write_text("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          PY
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post (or update) the evals comment
+        if: always()
+        continue-on-error: true   # a read-only token on a fork PR cannot comment; the step summary still carries it
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('comment.md', 'utf8');
+            const marker = '<!-- uvularia-evals -->';
+            const {owner, repo} = context.repo;
+            const issue_number = context.issue.number;
+            const {data: comments} = await github.rest.issues.listComments({owner, repo, issue_number});
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({owner, repo, comment_id: existing.id, body});
+            } else {
+              await github.rest.issues.createComment({owner, repo, issue_number, body});
+            }
+
+      - name: Fail if the dry or live run failed
+        if: steps.dry.outcome == 'failure' || steps.live.outcome == 'failure'
+        run: |
+          echo "evals reported problems; see the PR comment and the log above."
+          exit 1

@@ -1,0 +1,3 @@
+{"id": "ok-bylaws", "question": "How many directors are on the board?", "expect": "answered", "source_ids": ["2026-01-01-sample-bylaws"], "subjects": ["bylaw"]}
+{"id": "ok-trails", "question": "Are the trails open?", "expect": "answered", "source_ids": ["2026-02-01-are-the-trails-open"], "subjects": ["trails", "faq"]}
+{"id": "ok-offtopic", "question": "What is the weather today?", "expect": "declined", "source_ids": [], "subjects": []}

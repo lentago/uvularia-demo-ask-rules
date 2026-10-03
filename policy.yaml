@@ -1,0 +1,85 @@
+# policy.yaml — what your Ask box is allowed to do, and where it reads from.
+#
+# This file plus instructions.md are the two things a `rules-vN` release pins:
+# the Ask function downloads them at a fixed version and will not advance until a
+# newer release is cut. A change here is a reviewed pull request, not a live edit.
+#
+# Nothing secret belongs in this file. It is published as a release asset and is
+# readable by anyone. The API key lives in your runtime's secret store, never
+# here.
+
+# --- the kill switch -------------------------------------------------------- #
+# Flip to false to take the box down cleanly: it returns a short maintenance line
+# and answers nothing until you flip it back and cut a new release. This is the
+# fastest lever you have and it needs no code change.
+enabled: true
+
+# --- the model -------------------------------------------------------------- #
+# Pinned on purpose. A public box runs on Sonnet, not Opus: it is the cheaper,
+# faster tier and the triage here is not the hard kind. Pin an exact id so a
+# provider default never changes your box's behaviour without a release.
+model: claude-sonnet-5-5
+
+# --- where the records come from -------------------------------------------- #
+# The base URL of your records vault's `published` branch (GitHub Pages). The box
+# and the eval harness both read `<published_base>/corpus-latest.json` from here —
+# the CURRENTLY published corpus, by digest, never a vault checkout. Replace the
+# placeholder with your own org and repo.
+published_base: https://your-org.github.io/your-org-records
+
+# --- the daily cap ---------------------------------------------------------- #
+# A hard ceiling on questions answered per day, enforced by the runtime. It bounds
+# the month's model spend no matter what traffic arrives. Past the cap the box
+# says it has answered its quota for the day and stops.
+daily_cap: 500
+
+# --- what the box will engage with ------------------------------------------ #
+# The subjects your records actually cover. These are matched against a question
+# to decide what is in scope; a question about nothing on this list is declined.
+# Keep them broad topics, not record ids. Edit to match your organization.
+allowed_subjects:
+  - meetings
+  - minutes
+  - notices
+  - agendas
+  - bylaws
+  - policies
+  - filings
+  - reports
+  - announcements
+  - trails
+  - easements
+  - stewardship
+  - donations
+  - volunteering
+
+# --- what the box always refuses -------------------------------------------- #
+# Classes of request the box will not answer even if a record seems to touch
+# them. The engine declines these before it reads a record. Narrow and explicit
+# on purpose: each line is a thing you have decided the box must not do.
+refusal_classes:
+  - legal-advice          # what a law requires of the reader, or how to comply
+  - financial-advice      # what the reader should do with money
+  - personal-data         # a named individual's private details
+  - drafting              # writing letters, filings, or complaints for the reader
+  - speculation           # what the board "might" do, or anything not yet recorded
+
+# --- the standing disclaimer ------------------------------------------------ #
+# Attached to any answer that touches an obligation, a filing, or what a law
+# requires. It states what the box is and is not. Obligation packs encode posting
+# mechanics, not legal interpretation — this is where that line is drawn for
+# readers. Edit the wording to your counsel's liking; keep one.
+disclaimer: >-
+  This assistant reports what this organization has published and when. It is not
+  legal, financial, or professional advice, and it does not determine whether any
+  legal requirement has been met. For that, contact the organization or your own
+  adviser.
+
+# --- the eval gate ---------------------------------------------------------- #
+# Thresholds the golden set in evals/ must clear on a pull request. `threshold`
+# is the share of golden questions a live run must get right (outcome kind and
+# required citations) before the check passes. Dry mode — the default in CI,
+# needing no API key — is structural and must pass completely.
+eval:
+  threshold: 0.8         # live-mode pass rate required to merge
+  warn_below: 0.9        # live-mode rate that passes but is flagged for a look

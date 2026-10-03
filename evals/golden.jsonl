@@ -1,0 +1,15 @@
+# golden.jsonl — the questions your Ask box must get right, one JSON object per line.
+# This set is written against the uvularia demonstration vault; replace it with
+# questions over YOUR records (see evals/README.md). Fields: id, question, expect
+# (answered|incident|escalated|declined), source_ids (required citations),
+# subjects (topics the corpus must cover), note (why, for a human reviewer).
+{"id": "bylaws-trustees", "question": "How many trustees are on the board, according to the current bylaws?", "expect": "answered", "source_ids": ["2024-03-20-bylaws"], "subjects": ["bylaw", "governance"], "note": "The 2024 bylaws fix the board at seven trustees."}
+{"id": "conflict-of-interest", "question": "What does the conflict-of-interest policy require of a trustee with a conflict?", "expect": "answered", "source_ids": ["2024-01-17-conflict-of-interest-policy"], "subjects": ["policy", "governance"], "note": "They leave the discussion and do not vote on the matter."}
+{"id": "annual-report", "question": "Where is the most recent annual report?", "expect": "answered", "source_ids": ["2025-11-01-annual-report"], "subjects": ["report"], "note": "The 2025 annual report is the newest in the corpus."}
+{"id": "easement-allows", "question": "What does a conservation easement allow the landowner to do?", "expect": "answered", "source_ids": ["2025-08-01-what-does-a-conservation-easement-allow"], "subjects": ["easement", "faq"], "note": "Answered by the easement FAQ."}
+{"id": "donate-land", "question": "How do I donate land or a conservation easement?", "expect": "answered", "source_ids": ["2025-08-01-how-do-i-donate-land-or-a-conservation-easement"], "subjects": ["donate", "faq"], "note": "Answered by the donation FAQ."}
+{"id": "dogs-on-trails", "question": "Are dogs allowed on the trails?", "expect": "answered", "source_ids": ["2024-12-01-are-dogs-allowed-on-the-trails"], "subjects": ["trails", "faq"], "note": "Answered by the trail-use FAQ."}
+{"id": "volunteer", "question": "How can I volunteer?", "expect": "answered", "source_ids": ["2026-09-01-how-do-i-volunteer"], "subjects": ["volunteer", "faq"], "note": "Answered by the volunteering FAQ."}
+{"id": "board-meetings", "question": "When does the board meet, and can I attend?", "expect": "answered", "source_ids": ["2026-01-15-when-does-the-board-meet-and-can-i-attend"], "subjects": ["board", "faq"], "note": "Meetings are public; answered by the FAQ and the posted notices."}
+{"id": "river-sensors", "question": "What do the river sensors measure?", "expect": "answered", "source_ids": ["2025-02-15-what-do-the-river-sensors-measure"], "subjects": ["sensors", "faq"], "note": "Answered by the sensor FAQ."}
+{"id": "off-topic-restaurant", "question": "Can you recommend a good restaurant near the preserve?", "expect": "declined", "source_ids": [], "subjects": [], "note": "Out of scope — the records say nothing about restaurants, so the box declines rather than guessing."}

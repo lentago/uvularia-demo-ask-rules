@@ -1,0 +1,1 @@
+{"id": "bad-outcome", "question": "How many directors are on the board?", "expect": "declined", "source_ids": ["2026-01-01-sample-bylaws"], "subjects": ["bylaw"]}

@@ -1,0 +1,4 @@
+# Python bytecode and the eval report CI writes.
+__pycache__/
+*.pyc
+report.md

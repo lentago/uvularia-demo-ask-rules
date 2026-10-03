@@ -1,0 +1,18 @@
+# Who must approve a change to how the Ask box answers. Replace the placeholder
+# below with a GitHub team or usernames in YOUR org, then turn on "Require review
+# from Code Owners" in branch protection for main (Settings → Branches). Until you
+# do, anyone with write access can change the box's behaviour unreviewed.
+#
+# A team:      *  @your-org/ask-rules-reviewers
+# Individuals: *  @board-secretary @tech-director
+*  @REPLACE-WITH-YOUR-REVIEWER
+
+# The frozen system block and the policy are what the box IS. They shape every
+# answer and get pinned into each release, so they deserve the tightest reviewer
+# you have — your board secretary, and counsel if you have one.
+/instructions.md  @REPLACE-WITH-YOUR-REVIEWER
+/policy.yaml      @REPLACE-WITH-YOUR-REVIEWER
+
+# The checks that gate a change live here; changing them is a bigger decision
+# than editing a golden question.
+/.github/  @REPLACE-WITH-YOUR-REVIEWER

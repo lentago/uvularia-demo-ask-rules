@@ -1,0 +1,26 @@
+{
+  "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "published_at": "2026-01-01T00:00:00Z",
+  "records": [
+    {
+      "doc_id": "2026-01-01-sample-bylaws",
+      "title": "Sample Bylaws",
+      "tags": ["bylaw", "governance"],
+      "volatility": "stable",
+      "body": "# Sample Bylaws\n\nThe board has five directors.",
+      "path": "records/bylaw/2026-01-01-sample-bylaws.md",
+      "certainty": "verified",
+      "archived": false
+    },
+    {
+      "doc_id": "2026-02-01-are-the-trails-open",
+      "title": "Are the trails open?",
+      "tags": ["faq"],
+      "volatility": "stable",
+      "body": "# Are the trails open?\n\nTrails are open from dawn to dusk.",
+      "path": "records/faq/2026-02-01-are-the-trails-open.md",
+      "certainty": "verified",
+      "archived": false
+    }
+  ]
+}
