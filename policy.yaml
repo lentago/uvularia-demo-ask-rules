@@ -12,7 +12,7 @@
 # Flip to false to take the box down cleanly: it returns a short maintenance line
 # and answers nothing until you flip it back and cut a new release. This is the
 # fastest lever you have and it needs no code change.
-enabled: true
+enabled: false   # flip to true once /uvularia-demo/anthropic-api-key exists in SSM (maintainer, by hand)
 
 # --- the model -------------------------------------------------------------- #
 # Pinned on purpose. A public box runs on Sonnet, not Opus: it is the cheaper,
@@ -25,13 +25,13 @@ model: claude-sonnet-5-5
 # and the eval harness both read `<published_base>/corpus-latest.json` from here —
 # the CURRENTLY published corpus, by digest, never a vault checkout. Replace the
 # placeholder with your own org and repo.
-published_base: https://your-org.github.io/your-org-records
+published_base: https://lentago.github.io/uvularia-demo-records
 
 # --- the daily cap ---------------------------------------------------------- #
 # A hard ceiling on questions answered per day, enforced by the runtime. It bounds
 # the month's model spend no matter what traffic arrives. Past the cap the box
 # says it has answered its quota for the day and stops.
-daily_cap: 500
+daily_cap: 200
 
 # --- what the box will engage with ------------------------------------------ #
 # The subjects your records actually cover. These are matched against a question
