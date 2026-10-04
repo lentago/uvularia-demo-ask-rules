@@ -12,7 +12,7 @@
 # Flip to false to take the box down cleanly: it returns a short maintenance line
 # and answers nothing until you flip it back and cut a new release. This is the
 # fastest lever you have and it needs no code change.
-enabled: false   # flip to true once /uvularia-demo/anthropic-api-key exists in SSM (maintainer, by hand)
+enabled: true
 
 # --- the model -------------------------------------------------------------- #
 # Pinned on purpose. A public box runs on Sonnet, not Opus: it is the cheaper,
