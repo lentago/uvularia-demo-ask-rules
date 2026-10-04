@@ -120,8 +120,9 @@ Both carry `at`, the time in Unix seconds. The pane reads these field names
 from drosera's event contract.
 
 `subject` is the first of your rules' `allowed_subjects` (in `policy.yaml`)
-that the question mentions, matched without regard to case; `unmatched` if it
-mentions none. It is always one of your own listed words, never the question's.
+that the question mentions, matched without regard to case, in the listed form
+or its obvious singular or plural (`filing` finds `filings`, `policy` finds
+`policies`; `trailer` does not find `trails`); `unmatched` if it mentions none. It is always one of your own listed words, never the question's.
 The pane's demand loop groups the questions the box couldn't answer by it. A
 rules release with no `allowed_subjects` list sends no `subject` at all.
 
