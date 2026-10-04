@@ -1,5 +1,11 @@
 """The Function URL entrypoint: one POST, one grounded answer, with the guards.
 
+Plus one read-only route, ``GET /health``: what the box is serving (the corpus
+digest and the rules tag), whether it is switched on, and how much of today's
+cap is used. It handles no question, claims no cap slot, and calls no model.
+The records vault's watch workflow reads it to notice a stale digest or a cap
+running out (see ``health_body``).
+
 The request path, in order, each guard cheaper than the one it protects:
 
   1. CORS. Answer the preflight; refuse a browser origin that is not the site's.
@@ -45,6 +51,7 @@ class Deps:
     cap_reserve: Callable             # (day, cap, now) -> (allowed: bool, count: int)
     verify_turnstile: Callable        # (token: str, remote_ip: str) -> bool
     answer_question: Callable         # (engine, question: str) -> Answer-like
+    cap_used: Callable = lambda day: None  # noqa: E731 — (day) -> int | None; a read
     clock: Callable = time.time
     log: Callable = lambda rec: print(json.dumps(rec), flush=True)  # noqa: E731
     emit: Callable = lambda stage, payload: False  # noqa: E731 — telemetry; never raises
@@ -57,7 +64,7 @@ class Deps:
 def _cors_headers(cfg: Config) -> dict:
     return {
         "Access-Control-Allow-Origin": cfg.allowed_origin,
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "content-type",
         "Vary": "Origin",
         "Content-Type": "application/json",
@@ -74,6 +81,10 @@ def _reply(status: int, body: dict, cfg: Config) -> dict:
 
 def _method(event: dict) -> str:
     return event.get("requestContext", {}).get("http", {}).get("method", "GET").upper()
+
+
+def _path(event: dict) -> str:
+    return (event.get("rawPath") or "/").rstrip("/") or "/"
 
 
 def _source_ip(event: dict) -> str:
@@ -107,6 +118,58 @@ def _asked(deps: Deps, start: float, kind: str, question: str, *,
 
 
 # --------------------------------------------------------------------------- #
+# GET /health.                                                                 #
+# --------------------------------------------------------------------------- #
+
+def _today_cap(deployment, cfg: Config) -> int:
+    """policy.yaml's pinned cap wins over the module's fallback, as for a POST."""
+    cap = deployment.policy.daily_cap
+    return cap if cap is not None else cfg.daily_cap
+
+
+def health_body(deployment, cfg: Config, *, day: str, cap_used) -> dict:
+    """What ``GET /health`` returns, from an explicit list of fields.
+
+    The served digest and rules tag, whether the box is on, and today's cap.
+    Never the key, a token, an SSM path, or anything about who is asking. A
+    paused box loads no corpus, so its ``digest`` is null. ``cap_used`` is null
+    when the counter could not be read — unknown, not zero.
+    """
+    return {
+        "status": "ok",
+        "enabled": bool(deployment.policy.enabled),
+        "digest": deployment.resolved_digest or None,
+        # An explicit digest in the deploy config is a deliberate pin: the box is
+        # meant to lag the vault, so a watcher should not call it stale.
+        "digest_pinned": cfg.corpus_digest not in ("", "latest"),
+        "rules_tag": getattr(deployment, "resolved_tag", "") or None,
+        "day": day,
+        "cap_used": cap_used,
+        "cap": _today_cap(deployment, cfg),
+    }
+
+
+def _health(deps: Deps) -> dict:
+    cfg = deps.config
+    now = deps.clock()
+    day = time.strftime("%Y-%m-%d", time.gmtime(now))
+    try:
+        deployment = deps.get_deployment(now)
+    except Exception as exc:  # noqa: BLE001 — a health check reports, it never crashes
+        deps.log({"event": "health", "status": "error",
+                  "error": f"{type(exc).__name__}: {exc}"})
+        return _reply(503, {"status": "error",
+                            "reply": "The box could not load its rules or records."}, cfg)
+    try:
+        used = deps.cap_used(day)
+    except Exception as exc:  # noqa: BLE001
+        deps.log({"event": "health", "status": "cap_unreadable",
+                  "error": f"{type(exc).__name__}: {exc}"})
+        used = None
+    return _reply(200, health_body(deployment, cfg, day=day, cap_used=used), cfg)
+
+
+# --------------------------------------------------------------------------- #
 # The request handler.                                                         #
 # --------------------------------------------------------------------------- #
 
@@ -127,6 +190,11 @@ def handle(event: dict, deps: Deps) -> dict:
     if cfg.allowed_origin != "*" and origin and origin != cfg.allowed_origin:
         return _reply(403, {"kind": "declined",
                             "reply": "This assistant only answers from its own site."}, cfg)
+
+    if _path(event) == "/health":
+        if method != "GET":
+            return _reply(405, {"status": "error", "reply": "Read /health with GET."}, cfg)
+        return _health(deps)
 
     if method != "POST":
         return _reply(405, {"kind": "declined", "reply": "Send a question with POST."}, cfg)
@@ -156,7 +224,7 @@ def handle(event: dict, deps: Deps) -> dict:
                             "reply": "Could not verify the request. Please try again."}, cfg)
 
     # 5. Daily cap — policy.yaml's pinned value wins over the module's fallback.
-    cap = policy.daily_cap if policy.daily_cap is not None else cfg.daily_cap
+    cap = _today_cap(deployment, cfg)
     day = time.strftime("%Y-%m-%d", time.gmtime(now))
     allowed, count = deps.cap_reserve(day, cap, now)
     if not allowed:
@@ -260,6 +328,7 @@ def _build_deps() -> Deps:
             cfg, client, now=now,
             on_refresh=lambda d: pusher.emit("served", served_payload(d))),
         cap_reserve=lambda day, c, now: cap.reserve(day, c, int(now)),
+        cap_used=cap.used,
         verify_turnstile=lambda token, ip: turnstile_verify(
             enabled=cfg.turnstile_enabled, token=token,
             secret=turnstile_secret(), remote_ip=ip),

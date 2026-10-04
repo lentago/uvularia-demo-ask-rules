@@ -84,6 +84,24 @@ merge over GitHub OIDC, so no AWS keys live in a secret.
 - The turn log in CloudWatch shows the outcome, the latency, and the question
   truncated to 500 characters — and no origin, IP, or identity.
 
+## Check on it: `GET /health`
+
+The same URL answers `GET /health` with what the box is serving now. It handles no
+question, uses none of the day's cap, and calls no model:
+
+```
+curl -s "$FUNCTION_URL/health" | jq
+{"status":"ok","enabled":true,"digest":"3f9a…","digest_pinned":false,
+ "rules_tag":"rules-v4","day":"2026-10-04","cap_used":37,"cap":500}
+```
+
+`digest` is the corpus the box answers from (`null` while it is paused).
+`cap_used` is today's count (`null` if the counter could not be read). The reply
+never carries the key, an SSM path, or anything about who asked, and it gets the
+same CORS headers as a question. Put this URL in your records vault's
+`ASK_HEALTH_URL` variable. The vault's **watch** workflow then opens an issue if
+the box falls behind a publish, or if the day's cap passes 80 %.
+
 ## Watch it in Grafana (optional)
 
 **What you are about to do:** have the function send two kinds of short event to
