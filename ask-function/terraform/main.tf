@@ -86,8 +86,8 @@ data "aws_iam_policy_document" "this" {
     sid     = "ReadTheApiKey"
     actions = ["ssm:GetParameter"]
     resources = concat(
-      [data.aws_ssm_parameter.anthropic_key.arn],
-      var.turnstile_enabled ? [data.aws_ssm_parameter.turnstile_secret[0].arn] : [],
+      [local.anthropic_key_param_arn],
+      var.turnstile_enabled ? [local.turnstile_param_arn] : [],
     )
   }
 
@@ -112,19 +112,14 @@ resource "aws_iam_role_policy" "this" {
   policy = data.aws_iam_policy_document.this.json
 }
 
-# --- The key (and optional Turnstile secret), read for their ARNs only --------
-# with_decryption = false: Terraform needs the ARN to grant the role access, not
-# the value. The secret is never decrypted into state. Create the parameter out
-# of band (see README) before the first apply.
-data "aws_ssm_parameter" "anthropic_key" {
-  name            = var.anthropic_api_key_ssm_path
-  with_decryption = false
-}
-
-data "aws_ssm_parameter" "turnstile_secret" {
-  count           = var.turnstile_enabled ? 1 : 0
-  name            = var.turnstile_secret_ssm_path
-  with_decryption = false
+# The parameters are referenced by ARN, never read: the maintainer creates them
+# out of band (see README) and the function reads them at cold start. Nothing
+# about the key touches Terraform state, and the first apply does not need the
+# parameter to exist yet — the box simply serves its maintenance line until it does.
+locals {
+  ssm_parameter_arn_prefix = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter"
+  anthropic_key_param_arn  = "${local.ssm_parameter_arn_prefix}${var.anthropic_api_key_ssm_path}"
+  turnstile_param_arn      = var.turnstile_enabled ? "${local.ssm_parameter_arn_prefix}${var.turnstile_secret_ssm_path}" : null
 }
 
 # --- The durable daily cap ----------------------------------------------------
