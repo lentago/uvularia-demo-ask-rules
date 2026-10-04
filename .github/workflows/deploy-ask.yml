@@ -38,6 +38,9 @@ on:
   push:
     branches: [main]
     paths: ["ask-function/**", ".github/workflows/deploy-ask.yml"]
+  # By hand, from the Actions tab: a repository variable changed (a Loki URL, an
+  # origin) and the function must pick it up without a code change.
+  workflow_dispatch:
 
 permissions:
   contents: read
