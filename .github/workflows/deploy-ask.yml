@@ -89,6 +89,15 @@ jobs:
           role-to-assume: ${{ vars.ASK_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - uses: hashicorp/setup-terraform@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the function package
+        # Built here, on every run, rather than trusted to the module's
+        # null_resource: that resource re-runs only when the sources change, so
+        # a fresh runner with unchanged sources would have no zip to deploy.
+        working-directory: ${{ env.MODULE_DIR }}
+        run: bash ./build.sh
       - name: Write the S3 backend block
         working-directory: ${{ env.MODULE_DIR }}
         run: printf 'terraform {\n  backend "s3" {}\n}\n' > backend.tf
@@ -136,6 +145,15 @@ jobs:
           role-to-assume: ${{ vars.ASK_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - uses: hashicorp/setup-terraform@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the function package
+        # Built here, on every run, rather than trusted to the module's
+        # null_resource: that resource re-runs only when the sources change, so
+        # a fresh runner with unchanged sources would have no zip to deploy.
+        working-directory: ${{ env.MODULE_DIR }}
+        run: bash ./build.sh
       - name: Write the S3 backend block
         working-directory: ${{ env.MODULE_DIR }}
         run: printf 'terraform {\n  backend "s3" {}\n}\n' > backend.tf
