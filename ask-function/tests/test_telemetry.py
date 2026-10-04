@@ -17,7 +17,18 @@ from policy import Policy, parse_policy
 from telemetry import (ASKED_FIELDS, Pusher, asked_payload, cluster_slug, first_subject,
                        make_pusher, served_payload)
 
-RULES_POLICY = support.SRC.parents[1] / "ask-rules" / "policy.yaml"
+def _rules_policy():
+    """The rules' policy.yaml: beside the vendored ``ask-function/`` in a rules
+    repo, or the template's copy in the uvularia source tree. None if neither
+    layout holds one (the test that reads it then skips rather than guesses)."""
+    for candidate in (support.SRC.parents[1] / "policy.yaml",
+                      support.SRC.parents[1] / "ask-rules" / "policy.yaml"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+RULES_POLICY = _rules_policy()
 
 # The fields issues #52 and #59 name for an `asked` event — and nothing else.
 SPEC_ASKED = {"at", "kind", "latency_ms", "cap_used", "cap_remaining", "digest", "subject",
@@ -111,6 +122,8 @@ class FirstSubject(unittest.TestCase):
         self.assertIsNone(first_subject("trails", None))
 
     def test_the_shipped_policy_lists_subjects(self):
+        if RULES_POLICY is None:
+            self.skipTest("no policy.yaml beside this ask-function")
         policy = parse_policy(RULES_POLICY.read_text(encoding="utf-8"))
         self.assertIn("trails", policy.allowed_subjects)
         self.assertEqual(first_subject("When were the bylaws last changed?",
