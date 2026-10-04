@@ -23,6 +23,8 @@ from __future__ import annotations
 import base64
 import json
 import time
+
+from secrets import SecretUnavailable
 from dataclasses import dataclass
 from typing import Callable
 
@@ -153,7 +155,15 @@ def handle(event: dict, deps: Deps) -> dict:
 
     # 6. Answer. The engine's gate has already dropped any id that is not a real
     # record, so answer.sources carries only verified citations.
-    answer = deps.answer_question(deployment.engine, question)
+    try:
+        answer = deps.answer_question(deployment.engine, question)
+    except SecretUnavailable as exc:
+        deps.log({"event": "turn", "kind": "unconfigured", "error": str(exc),
+                  "question": question[:QUESTION_LOG_LIMIT]})
+        return _reply(503, {"kind": "maintenance",
+                            "reply": "This assistant is not set up yet. "
+                                     "Please check back soon.",
+                            "source_ids": [], "degraded_signals": ["api-key"]}, cfg)
     source_ids = [s.doc_id for s in answer.sources]
     degraded = list(answer.degraded_signals)
 
@@ -199,12 +209,26 @@ def _build_deps() -> Deps:
     from turnstile import verify as turnstile_verify
 
     cfg = Config.from_env()
-    api_key = read_secure_string(cfg.ssm_key_path, cfg.aws_region)
-    client = anthropic.Anthropic(api_key=api_key)
 
-    turnstile_secret = ""
-    if cfg.turnstile_enabled and cfg.turnstile_secret_ssm_path:
-        turnstile_secret = read_secure_string(cfg.turnstile_secret_ssm_path, cfg.aws_region)
+    # The API key is read lazily, on the first call that actually needs the
+    # model: the guards above it (origin, kill switch, Turnstile, cap) must all
+    # work on a box whose key has not been written yet, and a missing key must
+    # surface as a polite reply, not a crash at cold start.
+    class _LazyClient:
+        _real = None
+
+        def __getattr__(self, name):
+            if self._real is None:
+                api_key = read_secure_string(cfg.ssm_key_path, cfg.aws_region)
+                self._real = anthropic.Anthropic(api_key=api_key)
+            return getattr(self._real, name)
+
+    client = _LazyClient()
+
+    def turnstile_secret():
+        if cfg.turnstile_enabled and cfg.turnstile_secret_ssm_path:
+            return read_secure_string(cfg.turnstile_secret_ssm_path, cfg.aws_region)
+        return ""
 
     cap = DailyCap(cfg.cap_table, cfg.aws_region)
 
@@ -214,7 +238,7 @@ def _build_deps() -> Deps:
         cap_reserve=lambda day, c, now: cap.reserve(day, c, int(now)),
         verify_turnstile=lambda token, ip: turnstile_verify(
             enabled=cfg.turnstile_enabled, token=token,
-            secret=turnstile_secret, remote_ip=ip),
+            secret=turnstile_secret(), remote_ip=ip),
         answer_question=_answer_question,
     )
 

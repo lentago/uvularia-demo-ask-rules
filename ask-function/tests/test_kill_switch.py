@@ -97,3 +97,35 @@ class KillSwitchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class MissingKeyIsMaintenanceNotACrash(unittest.TestCase):
+    """A live box whose API key has not been written yet answers with a 503
+    maintenance-style reply and logs it; it never surfaces as a 500."""
+
+    def test_unreadable_key_returns_503_maintenance(self):
+        from secrets import SecretUnavailable
+
+        def no_key(engine, question):
+            raise SecretUnavailable("ParameterNotFound reading SSM parameter /x/key")
+
+        logs = []
+        policy = Policy(enabled=True, model="claude-sonnet-5-5", daily_cap=None, disclaimer="")
+        deployment = support.FakeDeployment(policy=policy, engine=None)
+        deps = Deps(
+            config=_config(),
+            get_deployment=lambda now: deployment,
+            cap_reserve=lambda day, cap, now: (True, 1),
+            verify_turnstile=lambda token, ip: True,
+            answer_question=no_key,
+            clock=lambda: 1000.0,
+            log=logs.append,
+        )
+        resp = handle(support.make_event(body={"question": "When is the next meeting?"}), deps)
+        self.assertEqual(resp["statusCode"], 503)
+        payload = json.loads(resp["body"])
+        self.assertEqual(payload["kind"], "maintenance")
+        self.assertIn("not set up yet", payload["reply"])
+        self.assertEqual(payload["source_ids"], [])
+        self.assertEqual(logs[-1]["kind"], "unconfigured")

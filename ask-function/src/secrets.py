@@ -12,6 +12,12 @@ from __future__ import annotations
 from functools import lru_cache
 
 
+class SecretUnavailable(RuntimeError):
+    """The SecureString could not be read: it does not exist yet, or this role
+    may not read it. The handler turns this into a maintenance-style reply
+    instead of a 500, so an unconfigured box still answers politely."""
+
+
 @lru_cache(maxsize=8)
 def read_secure_string(path: str, region: str) -> str:
     """Fetch and decrypt one SSM SecureString. Cached for the container's life.
@@ -22,6 +28,12 @@ def read_secure_string(path: str, region: str) -> str:
     """
     import boto3
 
+    from botocore.exceptions import ClientError
+
     client = boto3.client("ssm", region_name=region)
-    resp = client.get_parameter(Name=path, WithDecryption=True)
+    try:
+        resp = client.get_parameter(Name=path, WithDecryption=True)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        raise SecretUnavailable(f"{code or 'error'} reading SSM parameter {path}") from exc
     return resp["Parameter"]["Value"]
