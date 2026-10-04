@@ -39,8 +39,10 @@ locals {
 # --- Package the function (source + pinned deps) -----------------------------
 # mitchella and anthropic are not in the Lambda runtime, so the package is built
 # by build.sh (pip install --target, then zip). boto3 IS in the runtime and is
-# not vendored. The build re-runs whenever a source file or requirements.txt
-# changes (the trigger is local.src_hash).
+# not vendored. This null_resource is a convenience for LOCAL applies only: it
+# re-runs when a source file or requirements.txt changes (trigger: local.src_hash),
+# which means a fresh CI runner with unchanged sources would have no zip. The
+# deploy workflow therefore runs build.sh itself before every plan and apply.
 resource "null_resource" "build" {
   triggers = {
     src_hash = local.src_hash
