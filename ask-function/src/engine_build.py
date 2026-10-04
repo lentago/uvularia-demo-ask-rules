@@ -16,6 +16,11 @@ The result is cached and re-polled every ``refresh_seconds``. A new rules releas
 (when the tag is "latest") or a new published digest (when the digest is "latest")
 takes effect within that window with no redeploy — that is how a kill-switch flip
 reaches the box in minutes.
+
+Each re-poll reports what the box now serves (the ``served`` telemetry event),
+and so does any call that finds the last report ``HEARTBEAT_SECONDS`` old, so
+the rules repo's 15-minute ``GET /health`` ping keeps a quiet box reporting even
+when ``refresh_seconds`` is set longer than that.
 """
 
 from __future__ import annotations
@@ -30,6 +35,10 @@ from pathlib import Path
 from policy import Policy, parse_policy
 
 INCIDENTS_PATH = "/tmp/uvularia-incidents.toml"  # noqa: S108 — Lambda's only writable dir
+# Report what is served at least this often while the function is being called.
+# Under the heartbeat workflow's 15 minutes, so a ping that lands a little early
+# (GitHub's schedules drift) still reports.
+HEARTBEAT_SECONDS = 600
 
 
 def _http_get(url: str, timeout: float = 10.0, accept: str = "") -> str:
@@ -158,23 +167,29 @@ def build(cfg, client, *, now: float, http_get=_http_get) -> Deployment:
                       resolved_digest=corpus.fingerprint, fetched_at=now)
 
 
-_STATE: dict = {"deployment": None}
+_STATE: dict = {"deployment": None, "reported_at": None}
 
 
 def get_deployment(cfg, client, *, now: float | None = None, http_get=_http_get,
-                   on_refresh=None) -> Deployment:
+                   on_refresh=None, heartbeat_seconds: float = HEARTBEAT_SECONDS) -> Deployment:
     """Return a cached deployment, re-polling once ``refresh_seconds`` has passed.
 
-    ``on_refresh`` is called with each freshly built deployment — the ``served``
-    telemetry event hangs off it. It must not raise (the pusher never does).
+    ``on_refresh`` is called with each freshly built deployment, and with the
+    cached one when the last call to it is ``heartbeat_seconds`` old — the
+    ``served`` telemetry event hangs off it. It must not raise (the pusher
+    never does).
     """
     if now is None:
         now = time.time()
     current = _STATE["deployment"]
-    if current is not None and (now - current.fetched_at) < cfg.refresh_seconds:
-        return current
-    fresh = build(cfg, client, now=now, http_get=http_get)
-    _STATE["deployment"] = fresh
-    if on_refresh is not None:
-        on_refresh(fresh)
-    return fresh
+    if current is None or (now - current.fetched_at) >= cfg.refresh_seconds:
+        current = build(cfg, client, now=now, http_get=http_get)
+        _STATE["deployment"] = current
+        report = True
+    else:
+        last = _STATE.get("reported_at")
+        report = last is None or (now - last) >= heartbeat_seconds
+    if report and on_refresh is not None:
+        _STATE["reported_at"] = now
+        on_refresh(current)
+    return current

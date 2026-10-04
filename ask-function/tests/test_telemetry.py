@@ -11,13 +11,17 @@ import urllib.error
 
 import support
 from config import Config
-from engine_build import _STATE, get_deployment
+from engine_build import _STATE, HEARTBEAT_SECONDS, get_deployment
 from handler import Deps, handle
-from policy import Policy
-from telemetry import ASKED_FIELDS, Pusher, asked_payload, cluster_slug, make_pusher, served_payload
+from policy import Policy, parse_policy
+from telemetry import (ASKED_FIELDS, Pusher, asked_payload, cluster_slug, first_subject,
+                       make_pusher, served_payload)
 
-# The fields issue #52 names for an `asked` event — and nothing else.
-SPEC_ASKED = {"kind", "latency_ms", "cap_used", "cap_remaining", "degraded_signals", "question"}
+RULES_POLICY = support.SRC.parents[1] / "ask-rules" / "policy.yaml"
+
+# The fields issues #52 and #59 name for an `asked` event — and nothing else.
+SPEC_ASKED = {"at", "kind", "latency_ms", "cap_used", "cap_remaining", "digest", "subject",
+              "degraded_signals", "question"}
 IDENTITY_KEYS = {"ip", "source_ip", "sourceIp", "origin", "remote_ip", "user", "identity",
                  "token", "turnstile_token", "headers", "user_agent"}
 CALLER_IP = "203.0.113.7"   # support.make_event's sourceIp
@@ -36,13 +40,14 @@ def _config(**over):
     return Config(**base)
 
 
-def _deps(emitted, *, enabled=True, emit=None, answer=None):
-    policy = Policy(enabled=enabled, model="claude-sonnet-5-5", daily_cap=None, disclaimer="")
+def _deps(emitted, *, enabled=True, emit=None, answer=None, subjects=("trails", "meetings")):
+    policy = Policy(enabled=enabled, model="claude-sonnet-5-5", daily_cap=None, disclaimer="",
+                    allowed_subjects=subjects)
     deployment = support.FakeDeployment(policy=policy)
     answer = answer or support.FakeAnswer(
         "answered", "Yes.", sources=[support.FakeSource("2026-01-01-trails", "Trails", "p")],
         degraded=["standing"])
-    ticks = iter([1000.0, 1000.25, 1000.25, 1000.25])
+    ticks = iter([1000.0, 1002.5, 1002.5, 1002.5])
     return Deps(
         config=_config(),
         get_deployment=lambda now: deployment,
@@ -55,23 +60,68 @@ def _deps(emitted, *, enabled=True, emit=None, answer=None):
     )
 
 
+def _payload(**over):
+    base = dict(at=1000.9, kind="answered", latency_ms=12, cap_used=1, cap_remaining=9,
+                digest="d" * 64, subject="trails", degraded_signals=("feed",), question="q")
+    base.update(over)
+    return asked_payload(**base)
+
+
 class AskedEventBuilder(unittest.TestCase):
     def test_fields_are_exactly_the_issues_list(self):
         self.assertEqual(set(ASKED_FIELDS), SPEC_ASKED)
-        p = asked_payload(kind="answered", latency_ms=12, cap_used=1, cap_remaining=9,
-                          degraded_signals=("feed",), question="q")
+        p = _payload()
         self.assertEqual(set(p), SPEC_ASKED)
         self.assertEqual(p["degraded_signals"], ["feed"])
 
+    def test_at_is_whole_epoch_seconds(self):
+        self.assertEqual(_payload()["at"], 1000)
+        self.assertIsInstance(_payload()["at"], int)
+
+    def test_unknown_subject_is_left_out_not_guessed(self):
+        p = _payload(subject=None)
+        self.assertNotIn("subject", p)
+        self.assertEqual(set(p), SPEC_ASKED - {"subject"})
+
     def test_question_is_truncated_to_500(self):
-        p = asked_payload(kind="answered", latency_ms=0, cap_used=1, cap_remaining=0,
-                          degraded_signals=(), question="x" * 2000)
-        self.assertEqual(len(p["question"]), 500)
+        self.assertEqual(len(_payload(question="x" * 2000)["question"]), 500)
 
     def test_builder_refuses_anything_extra(self):
         with self.assertRaises(TypeError):
-            asked_payload(kind="answered", latency_ms=0, cap_used=1, cap_remaining=0,
-                          degraded_signals=(), question="q", origin=CALLER_ORIGIN)
+            _payload(origin=CALLER_ORIGIN)
+
+
+class FirstSubject(unittest.TestCase):
+    SUBJECTS = ("meetings", "minutes", "trails")
+
+    def test_earliest_mention_in_the_question_wins(self):
+        self.assertEqual(first_subject("Are the TRAILS open after the meetings?", self.SUBJECTS),
+                         "trails")
+
+    def test_a_tie_goes_to_the_policy_order(self):
+        self.assertEqual(first_subject("minutes", ("minutes", "minute")), "minutes")
+        self.assertEqual(first_subject("minutes", ("minute", "minutes")), "minute")
+
+    def test_no_match_is_the_literal_none(self):
+        self.assertEqual(first_subject("Where do I park?", self.SUBJECTS), "unmatched")
+        self.assertEqual(first_subject("", self.SUBJECTS), "unmatched")
+
+    def test_no_subject_list_is_unknown(self):
+        self.assertIsNone(first_subject("trails", ()))
+        self.assertIsNone(first_subject("trails", None))
+
+    def test_the_shipped_policy_lists_subjects(self):
+        policy = parse_policy(RULES_POLICY.read_text(encoding="utf-8"))
+        self.assertIn("trails", policy.allowed_subjects)
+        self.assertEqual(first_subject("When were the bylaws last changed?",
+                                       policy.allowed_subjects), "bylaws")
+
+    def test_policy_list_forms(self):
+        block = "enabled: true\nallowed_subjects:\n  - Trails  # comment\n\n  - 'meetings'\nmodel: m\n"
+        self.assertEqual(parse_policy(block).allowed_subjects, ("Trails", "meetings"))
+        flow = "allowed_subjects: [trails, \"meetings\"]\n"
+        self.assertEqual(parse_policy(flow).allowed_subjects, ("trails", "meetings"))
+        self.assertEqual(parse_policy("enabled: true\n").allowed_subjects, ())
 
 
 class HandlerEmitsOneAskedEventPerTurn(unittest.TestCase):
@@ -89,10 +139,22 @@ class HandlerEmitsOneAskedEventPerTurn(unittest.TestCase):
         self.assertEqual(stage, "asked")
         self.assertEqual(set(payload), SPEC_ASKED)
         self.assertEqual(payload["kind"], "answered")
-        self.assertEqual(payload["latency_ms"], 250)
+        self.assertEqual(payload["latency_ms"], 2500)
         self.assertEqual((payload["cap_used"], payload["cap_remaining"]), (3, 7))
         self.assertEqual(payload["degraded_signals"], ["standing"])
         self.assertEqual(len(payload["question"]), 500)
+        self.assertEqual(payload["at"], 1000)
+        self.assertEqual(payload["digest"], "deadbeef")
+        self.assertEqual(payload["subject"], "unmatched")
+
+    def test_subject_is_the_first_allowed_subject_never_the_question(self):
+        emitted = []
+        self._ask(_deps(emitted), question="Are the meetings or the trails open on Sunday?")
+        _, payload = emitted[0]
+        self.assertEqual(payload["subject"], "meetings")
+        emitted = []
+        self._ask(_deps(emitted, subjects=()), question="Are the trails open?")
+        self.assertNotIn("subject", emitted[0][1])
 
     def test_no_identity_anywhere_in_the_event(self):
         emitted = []
@@ -107,6 +169,7 @@ class HandlerEmitsOneAskedEventPerTurn(unittest.TestCase):
         emitted = []
         self._ask(_deps(emitted, enabled=False))
         self.assertEqual([(s, p["kind"]) for s, p in emitted], [("asked", "maintenance")])
+        self.assertEqual((emitted[0][1]["at"], emitted[0][1]["subject"]), (1000, "trails"))
 
     def test_a_failing_pusher_never_changes_the_answer(self):
         def outage(*a, **kw):
@@ -156,20 +219,70 @@ class ServedOnRefresh(unittest.TestCase):
     POLICY = "enabled: false\nmodel: claude-sonnet-5-5\n"
 
     def setUp(self):
-        _STATE["deployment"] = None
+        _STATE.update(deployment=None, reported_at=None)
 
     def tearDown(self):
-        _STATE["deployment"] = None
+        _STATE.update(deployment=None, reported_at=None)
+
+    def _calls(self, times, *, refresh_seconds=300, **kw):
+        cfg = _config(rules_tag="rules-v4", refresh_seconds=refresh_seconds)
+        seen, builds = [], []
+
+        def http_get(url, **_):
+            builds.append(url)
+            return self.POLICY
+        for now in times:
+            get_deployment(cfg, None, now=now, http_get=http_get,
+                           on_refresh=lambda d, now=now: seen.append(served_payload(d, at=now)),
+                           **kw)
+        return seen, builds
 
     def test_served_fires_once_per_fresh_deployment(self):
-        cfg = _config(rules_tag="rules-v4", refresh_seconds=300)
-        seen = []
-        http_get = lambda url, **kw: self.POLICY  # noqa: E731
-        for now in (1000.0, 1100.0, 1400.0):     # build, cached, rebuilt
-            get_deployment(cfg, None, now=now, http_get=http_get,
-                           on_refresh=lambda d: seen.append(served_payload(d)))
+        seen, _ = self._calls((1000.0, 1100.0, 1400.0))     # build, cached, rebuilt
         self.assertEqual(len(seen), 2)
-        self.assertEqual(seen[0], {"digest": None, "rules_tag": "rules-v4", "enabled": False})
+        self.assertEqual(seen[0], {"at": 1000, "digest": None, "rules_tag": "rules-v4",
+                                   "enabled": False})
+        self.assertEqual(seen[1]["at"], 1400)
+
+    def test_a_cached_box_still_reports_once_the_heartbeat_is_due(self):
+        # A long refresh window: only the first call rebuilds, but a call that
+        # finds the last report HEARTBEAT_SECONDS old reports the cached one.
+        t0 = 1000.0
+        times = (t0, t0 + 60, t0 + HEARTBEAT_SECONDS, t0 + HEARTBEAT_SECONDS + 60,
+                 t0 + 2 * HEARTBEAT_SECONDS)
+        seen, builds = self._calls(times, refresh_seconds=3600)
+        self.assertEqual(len(builds), 1)
+        self.assertEqual([p["at"] for p in seen],
+                         [1000, 1000 + HEARTBEAT_SECONDS, 1000 + 2 * HEARTBEAT_SECONDS])
+
+    def test_heartbeat_is_under_the_fifteen_minute_ping(self):
+        self.assertLess(HEARTBEAT_SECONDS, 15 * 60)
+
+    def test_can_fail_without_a_heartbeat_a_quiet_cached_box_says_nothing(self):
+        seen, _ = self._calls((1000.0, 1000.0 + HEARTBEAT_SECONDS), refresh_seconds=3600,
+                              heartbeat_seconds=float("inf"))
+        self.assertEqual(len(seen), 1, "the mutation should silence the second report")
+
+    def test_a_health_ping_reports_served_and_claims_no_cap_slot(self):
+        cfg = _config(rules_tag="rules-v4", refresh_seconds=3600)
+        emitted, reserved = [], []
+        clock = iter([1000.0, 1000.0 + HEARTBEAT_SECONDS])
+
+        def deployment(now):
+            return get_deployment(cfg, None, now=now, http_get=lambda url, **_: self.POLICY,
+                                  on_refresh=lambda d: emitted.append(
+                                      ("served", served_payload(d, at=now))))
+        deps = Deps(config=cfg, get_deployment=deployment,
+                    cap_reserve=lambda *a: reserved.append(a) or (True, 1),
+                    verify_turnstile=None, answer_question=None, cap_used=lambda day: 4,
+                    clock=lambda: next(clock), log=lambda rec: None)
+        for _ in range(2):
+            resp = handle(support.make_event(method="GET", path="/health"), deps)
+            self.assertEqual(resp["statusCode"], 200)
+        self.assertEqual([(s, p["at"], p["rules_tag"]) for s, p in emitted],
+                         [("served", 1000, "rules-v4"),
+                          ("served", 1000 + HEARTBEAT_SECONDS, "rules-v4")])
+        self.assertEqual(reserved, [])
 
 
 class _MockLoki(http.server.BaseHTTPRequestHandler):
@@ -194,8 +307,7 @@ class WireFormatThroughTheVendoredClient(unittest.TestCase):
             cfg = _config(loki_push_url=f"http://127.0.0.1:{server.server_port}",
                           loki_token_ssm_path="/x/loki")
             pusher = make_pusher(cfg, lambda path, region: "123:glc_tok")
-            payload = asked_payload(kind="answered", latency_ms=5, cap_used=1,
-                                    cap_remaining=9, degraded_signals=(), question="q")
+            payload = _payload()
             self.assertTrue(pusher.emit("asked", payload))
         finally:
             server.shutdown()
