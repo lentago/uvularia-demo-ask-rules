@@ -84,6 +84,50 @@ merge over GitHub OIDC, so no AWS keys live in a secret.
 - The turn log in CloudWatch shows the outcome, the latency, and the question
   truncated to 500 characters — and no origin, IP, or identity.
 
+## Watch it in Grafana (optional)
+
+**What you are about to do:** have the function send two kinds of short event to
+a free Grafana Cloud account you own. Grafana Cloud is a hosted dashboard service;
+its log store is called **Loki**.
+
+- `served`: each time the box re-polls, the corpus digest and rules tag it is now
+  answering from;
+- `asked`: once per question, the outcome (`kind`), how long it took, how much
+  of today's cap is used and left, which signals degraded, and the question cut
+  to 500 characters. **Never** the asker's origin, IP address, or anything else
+  that says who asked.
+
+**Why bother:** next to your vault's and rules repo's events, you can see that the
+box is serving the digest you just published and how it's answering. **Skip this
+if** CloudWatch's turn log is enough. With `loki_push_url` empty the function sends
+nothing and reads no extra secret.
+
+**How long:** about ten minutes if you already have the Grafana stack and the
+write-only token from the records vault's README (**Watch the pipeline**).
+
+1. Put the token pair in SSM as a SecureString, the same way as the API key:
+   ```
+   aws ssm put-parameter --name /uvularia/loki-write-token --type SecureString \
+     --value '123456:glc_...'
+   ```
+2. Add two variables to `terraform.tfvars` and apply:
+   ```hcl
+   loki_push_url             = "https://logs-prod-NNN.grafana.net"
+   loki_write_token_ssm_path = "/uvularia/loki-write-token"
+   ```
+   Optionally set `loki_cluster` to your organization's short name. The default
+   is your rules repo's owner, lowercased. With the deploy workflow, set the
+   repository variables `LOKI_PUSH_URL` and `LOKI_WRITE_TOKEN_SSM_PATH` (and
+   optionally `LOKI_CLUSTER`) instead.
+
+Sending is **best-effort**. Each push has a two-second limit. If Grafana is down
+or the token can't be read, CloudWatch gets one `telemetry_warning` line and the
+answer goes out unchanged.
+
+**How you know it worked:** ask one question, then in Grafana open **Explore** →
+Loki and run `{source="uvularia", pipeline="ask"} | json`. You'll see a `served`
+event from the first refresh and an `asked` event for your question.
+
 ## What it costs
 
 - **Lambda, DynamoDB, CloudWatch: free tier.** The function is invoked per
@@ -132,6 +176,8 @@ you it was working with less than the full picture.
 | `src/turnstile.py` | the bot check (off by default) |
 | `src/policy.py` | reads the kill switch, model, cap, and disclaimer from `policy.yaml` |
 | `src/config.py` | the deploy-time settings, from the environment |
+| `src/telemetry.py` | the optional `served` / `asked` events to your Grafana Cloud Loki; a no-op when unset |
+| `src/loki_push.py` | drosera's Loki push client, vendored unchanged (the header names the commit) |
 | `terraform/` | the module: Lambda, Function URL, DynamoDB, log group, least-privilege role |
 | `tests/` | unit tests (no key, no network) + a live integration test over the demo vault |
 | `requirements.txt` | mitchella (pinned by commit) and anthropic; boto3 is in the runtime |

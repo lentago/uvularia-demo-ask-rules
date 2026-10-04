@@ -51,7 +51,7 @@ jobs:
         continue-on-error: true   # captured below so the comment still posts; the job fails at the end
         run: |
           set +e
-          python3 evals/run.py --mode dry --report dry-report.md 2>&1 | tee dry.txt
+          python3 evals/run.py --mode dry --report dry-report.md --summary-json dry-summary.json 2>&1 | tee dry.txt
           rc=${PIPESTATUS[0]}
           if [ "$rc" = "3" ]; then
             echo "corpus=missing" >> "$GITHUB_OUTPUT"   # fresh repo: nothing published yet; a notice, not a failure
@@ -70,7 +70,7 @@ jobs:
         continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.MITCHELLA_API_KEY }}
-        run: python3 evals/run.py --mode live --report live-report.md
+        run: python3 evals/run.py --mode live --report live-report.md --summary-json live-summary.json
 
       - name: Build the PR comment (prompt diff + answer diff)
         if: always()
@@ -132,6 +132,42 @@ jobs:
             } else {
               await github.rest.issues.createComment({owner, repo, issue_number, body});
             }
+
+      # --- Telemetry (optional; see README "Watch the pipeline") ---------------
+      # Describes this eval run (pass/fail counts, live if it ran, else dry) and
+      # pushes it to your own Grafana Cloud Loki when LOKI_PUSH_URL is set. Unset,
+      # it prints one "telemetry not configured" line. Neither step can fail the
+      # check: a Loki outage is a warning, never a red pull request.
+      - name: Telemetry — describe this eval run
+        id: telemetry
+        if: always()
+        continue-on-error: true
+        env:
+          LOKI_PUSH_URL: ${{ vars.LOKI_PUSH_URL }}
+          LOKI_CLUSTER: ${{ vars.LOKI_CLUSTER }}
+          LOKI_TOKEN_SET: ${{ secrets.LOKI_WRITE_TOKEN != '' }}
+          JOB_STATUS: ${{ job.status }}
+          CORPUS: ${{ steps.dry.outputs.corpus }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          summary=live-summary.json
+          [ -f "$summary" ] || summary=dry-summary.json
+          python3 scripts/telemetry.py evals --summary "$summary" --corpus "$CORPUS" \
+            --pr "$PR_NUMBER" --job-status "$JOB_STATUS"
+
+      - name: Telemetry — push the evals event
+        if: always() && steps.telemetry.outputs.enabled == 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: lentago/drosera/.github/actions/loki-event@main
+        with:
+          loki_url: ${{ vars.LOKI_PUSH_URL }}
+          loki_token: ${{ secrets.LOKI_WRITE_TOKEN }}
+          cluster: ${{ steps.telemetry.outputs.cluster }}
+          source: uvularia
+          pipeline: rules
+          stage: evals
+          payload-json: ${{ steps.telemetry.outputs.payload }}
 
       - name: Fail if the dry or live run failed
         if: steps.dry.outcome == 'failure' || steps.live.outcome == 'failure'

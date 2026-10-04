@@ -168,13 +168,18 @@ def subject_maps(subject, haystacks):
 # Dry mode: structural checks, no model.                                       #
 # --------------------------------------------------------------------------- #
 
-def check_dry(entries, bundle):
-    """Return a list of human-readable errors; empty means the golden set passes."""
+def check_dry(entries, bundle, failed=None):
+    """Return a list of human-readable errors; empty means the golden set passes.
+
+    Pass a set as ``failed`` to collect the index of every entry that drew at
+    least one error — the pass/fail counts the summary reports.
+    """
     doc_ids, haystacks = corpus_index(bundle)
     errors = []
     seen_ids = set()
 
     for i, e in enumerate(entries):
+        before = len(errors)
         where = e.get("id") or f"entry #{i + 1}"
 
         if e.get("id"):
@@ -207,6 +212,9 @@ def check_dry(entries, bundle):
         for subject in e.get("subjects", []):
             if not subject_maps(subject, haystacks):
                 errors.append(f"{where}: subject '{subject}' maps to no published record")
+
+        if failed is not None and len(errors) > before:
+            failed.add(i)
 
     return errors
 
@@ -361,6 +369,7 @@ def main(argv=None):
     parser.add_argument("--incidents", default=str(TEMPLATE_ROOT / "signals" / "incidents.toml"))
     parser.add_argument("--report", help="write the markdown report here as well as stdout")
     parser.add_argument("--threshold", type=float, help="override policy.yaml's live pass-rate threshold")
+    parser.add_argument("--summary-json", help="also write {mode, total, passed, failed} here (for telemetry)")
     args = parser.parse_args(argv)
 
     entries = load_golden(args.golden)
@@ -368,9 +377,11 @@ def main(argv=None):
     bundle = load_bundle(location)
 
     if args.mode == "dry":
-        errors = check_dry(entries, bundle)
+        failed = set()
+        errors = check_dry(entries, bundle, failed=failed)
         report = dry_report(entries, errors)
         _emit(report, args.report)
+        _summary(args.summary_json, "dry", len(entries), len(entries) - len(failed))
         return 1 if errors else 0
 
     # live
@@ -386,7 +397,17 @@ def main(argv=None):
                          "Run dry mode, or `pip install` the engine and set MITCHELLA_API_KEY.")
     report = live_report(rows, pass_rate, threshold, warn_below)
     _emit(report, args.report)
+    _summary(args.summary_json, "live", len(rows), sum(1 for r in rows if r["ok"]))
     return 0 if pass_rate >= threshold else 1
+
+
+def _summary(path, mode, total, passed):
+    """The run in four numbers, for the workflow's telemetry step. No questions,
+    no answers — only the counts."""
+    if path:
+        Path(path).write_text(json.dumps(
+            {"mode": mode, "total": total, "passed": passed, "failed": total - passed}) + "\n",
+            encoding="utf-8")
 
 
 def _emit(report, report_path):

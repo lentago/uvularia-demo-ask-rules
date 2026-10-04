@@ -69,6 +69,13 @@ class Config:
     # breach surfaced by standing.json matches on real topics, not bare ids.
     obligations_url: str
     aws_region: str
+    # Optional pipeline events to your own Grafana Cloud Loki (see telemetry.py).
+    # An empty URL means no events and no SSM read. The write token sits in an
+    # SSM SecureString like the API key; the cluster label defaults to the rules
+    # repo's owner.
+    loki_push_url: str = ""
+    loki_token_ssm_path: str = ""
+    loki_cluster: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -93,4 +100,7 @@ class Config:
             ),
             obligations_url=os.environ.get("UVULARIA_OBLIGATIONS_URL", "").strip(),
             aws_region=os.environ.get("AWS_REGION", "us-east-1").strip(),
+            loki_push_url=os.environ.get("UVULARIA_LOKI_PUSH_URL", "").strip(),
+            loki_token_ssm_path=os.environ.get("UVULARIA_LOKI_TOKEN_SSM_PATH", "").strip(),
+            loki_cluster=os.environ.get("UVULARIA_LOKI_CLUSTER", "").strip(),
         )

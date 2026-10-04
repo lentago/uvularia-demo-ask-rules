@@ -15,7 +15,9 @@ The request path, in order, each guard cheaper than the one it protects:
 
 The turn log line goes to stdout (CloudWatch): the outcome, the latency, the cap
 state, and the question truncated to 500 characters. No origin, no IP, no token —
-nothing that identifies who asked.
+nothing that identifies who asked. When Loki is configured, the same turn also
+goes out as one ``asked`` event (see ``telemetry.py``), built from an explicit
+field list so nothing identifying can ride along; without it, nothing is sent.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from config import Config
+from telemetry import asked_payload
 
 QUESTION_LOG_LIMIT = 500
 
@@ -44,6 +47,7 @@ class Deps:
     answer_question: Callable         # (engine, question: str) -> Answer-like
     clock: Callable = time.time
     log: Callable = lambda rec: print(json.dumps(rec), flush=True)  # noqa: E731
+    emit: Callable = lambda stage, payload: False  # noqa: E731 — telemetry; never raises
 
 
 # --------------------------------------------------------------------------- #
@@ -93,6 +97,15 @@ def _parse_body(event: dict) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _asked(deps: Deps, start: float, kind: str, question: str, *,
+           cap_used=None, cap_remaining=None, degraded=()) -> None:
+    """One ``asked`` event for this turn. Best-effort: the pusher never raises."""
+    deps.emit("asked", asked_payload(
+        kind=kind, latency_ms=round((deps.clock() - start) * 1000),
+        cap_used=cap_used, cap_remaining=cap_remaining,
+        degraded_signals=degraded, question=question))
+
+
 # --------------------------------------------------------------------------- #
 # The request handler.                                                         #
 # --------------------------------------------------------------------------- #
@@ -132,6 +145,7 @@ def handle(event: dict, deps: Deps) -> dict:
     if not policy.enabled:
         deps.log({"event": "turn", "kind": "maintenance",
                   "question": question[:QUESTION_LOG_LIMIT]})
+        _asked(deps, now, "maintenance", question)
         return _reply(200, {"kind": "maintenance", "reply": cfg.maintenance_message,
                             "source_ids": [], "degraded_signals": []}, cfg)
 
@@ -148,6 +162,7 @@ def handle(event: dict, deps: Deps) -> dict:
     if not allowed:
         deps.log({"event": "turn", "kind": "capped", "cap": cap,
                   "question": question[:QUESTION_LOG_LIMIT]})
+        _asked(deps, now, "capped", question, cap_used=cap, cap_remaining=0)
         return _reply(429, {"kind": "declined",
                             "reply": "This assistant has answered its limit of questions "
                                      "for today. Please try again tomorrow.",
@@ -160,6 +175,8 @@ def handle(event: dict, deps: Deps) -> dict:
     except SecretUnavailable as exc:
         deps.log({"event": "turn", "kind": "unconfigured", "error": str(exc),
                   "question": question[:QUESTION_LOG_LIMIT]})
+        _asked(deps, now, "unconfigured", question, cap_used=count,
+               cap_remaining=max(cap - count, 0), degraded=["api-key"])
         return _reply(503, {"kind": "maintenance",
                             "reply": "This assistant is not set up yet. "
                                      "Please check back soon.",
@@ -178,6 +195,8 @@ def handle(event: dict, deps: Deps) -> dict:
         "degraded_signals": degraded,
         "question": question[:QUESTION_LOG_LIMIT],
     })
+    _asked(deps, now, answer.kind.value, question, cap_used=count,
+           cap_remaining=max(cap - count, 0), degraded=degraded)
 
     return _reply(200, {
         "kind": answer.kind.value,
@@ -206,9 +225,12 @@ def _build_deps() -> Deps:
     from cap import DailyCap
     from engine_build import get_deployment
     from secrets import read_secure_string
+    from telemetry import make_pusher, served_payload
     from turnstile import verify as turnstile_verify
 
     cfg = Config.from_env()
+    # No-op unless UVULARIA_LOKI_PUSH_URL is set; never raises either way.
+    pusher = make_pusher(cfg, read_secure_string)
 
     # The API key is read lazily, on the first call that actually needs the
     # model: the guards above it (origin, kill switch, Turnstile, cap) must all
@@ -234,12 +256,15 @@ def _build_deps() -> Deps:
 
     return Deps(
         config=cfg,
-        get_deployment=lambda now: get_deployment(cfg, client, now=now),
+        get_deployment=lambda now: get_deployment(
+            cfg, client, now=now,
+            on_refresh=lambda d: pusher.emit("served", served_payload(d))),
         cap_reserve=lambda day, c, now: cap.reserve(day, c, int(now)),
         verify_turnstile=lambda token, ip: turnstile_verify(
             enabled=cfg.turnstile_enabled, token=token,
             secret=turnstile_secret(), remote_ip=ip),
         answer_question=_answer_question,
+        emit=pusher.emit,
     )
 
 

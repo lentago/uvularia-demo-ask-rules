@@ -9,6 +9,8 @@
 #   * the log group is pre-created with retention, so the role needs no
 #     CreateLogGroup;
 #   * the role is least privilege and accepts an optional permissions boundary;
+#   * pipeline events to the client's own Loki are optional: no URL, no events,
+#     and no extra SSM read granted;
 #   * CORS and the bot check live in the handler (one authority for the headers).
 #
 # Lineage: solidago's modules/ask-lambda, with its plaintext key and in-memory
@@ -90,6 +92,7 @@ data "aws_iam_policy_document" "this" {
     resources = concat(
       [local.anthropic_key_param_arn],
       var.turnstile_enabled ? [local.turnstile_param_arn] : [],
+      local.loki_enabled ? [local.loki_token_param_arn] : [],
     )
   }
 
@@ -122,6 +125,8 @@ locals {
   ssm_parameter_arn_prefix = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter"
   anthropic_key_param_arn  = "${local.ssm_parameter_arn_prefix}${var.anthropic_api_key_ssm_path}"
   turnstile_param_arn      = var.turnstile_enabled ? "${local.ssm_parameter_arn_prefix}${var.turnstile_secret_ssm_path}" : null
+  loki_enabled             = var.loki_push_url != "" && var.loki_write_token_ssm_path != ""
+  loki_token_param_arn     = local.loki_enabled ? "${local.ssm_parameter_arn_prefix}${var.loki_write_token_ssm_path}" : null
 }
 
 # --- The durable daily cap ----------------------------------------------------
@@ -182,6 +187,9 @@ resource "aws_lambda_function" "this" {
       UVULARIA_REFRESH_SECONDS           = tostring(var.refresh_seconds)
       UVULARIA_MAINTENANCE_MESSAGE       = var.maintenance_message
       UVULARIA_OBLIGATIONS_URL           = var.obligations_url
+      UVULARIA_LOKI_PUSH_URL             = var.loki_push_url
+      UVULARIA_LOKI_TOKEN_SSM_PATH       = var.loki_write_token_ssm_path
+      UVULARIA_LOKI_CLUSTER              = var.loki_cluster
     }
   }
 
