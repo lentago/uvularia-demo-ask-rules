@@ -113,6 +113,33 @@ class FirstSubject(unittest.TestCase):
         self.assertEqual(first_subject("minutes", ("minutes", "minute")), "minutes")
         self.assertEqual(first_subject("minutes", ("minute", "minutes")), "minute")
 
+    def test_a_singular_question_matches_a_plural_subject(self):
+        self.assertEqual(first_subject("Was the 2026 Form PC filing posted, and when?",
+                                       ("filings",)), "filings")
+        self.assertEqual(first_subject("Where is the trail map?", self.SUBJECTS), "trails")
+
+    def test_a_plural_question_matches_a_singular_subject(self):
+        self.assertEqual(first_subject("Show me the notices", ("notice",)), "notice")
+
+    def test_y_and_ies_go_both_ways(self):
+        self.assertEqual(first_subject("What is the privacy policy?", ("policies",)), "policies")
+        self.assertEqual(first_subject("Which policies changed?", ("policy",)), "policy")
+
+    def test_es_is_stripped_and_added(self):
+        self.assertEqual(first_subject("Is the easement recorded?", ("easements",)), "easements")
+        self.assertEqual(first_subject("Any new bylaw?", ("bylaws",)), "bylaws")
+        self.assertEqual(first_subject("List the boxes", ("box",)), "box")
+
+    def test_the_subject_is_returned_as_listed_not_inflected(self):
+        self.assertEqual(first_subject("the trail", ("Trails",)), "Trails")
+
+    def test_an_inflected_form_inside_a_longer_word_does_not_match(self):
+        self.assertEqual(first_subject("Is the trailer parked?", ("trails",)), "unmatched")
+        self.assertEqual(first_subject("Any reporting?", ("reports",)), "unmatched")
+
+    def test_earliest_wins_across_forms(self):
+        self.assertEqual(first_subject("Is the trail near the meetings?", self.SUBJECTS), "trails")
+
     def test_no_match_is_the_literal_none(self):
         self.assertEqual(first_subject("Where do I park?", self.SUBJECTS), "unmatched")
         self.assertEqual(first_subject("", self.SUBJECTS), "unmatched")

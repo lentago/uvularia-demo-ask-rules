@@ -45,20 +45,54 @@ ASKED_FIELDS = ("at", "kind", "latency_ms", "cap_used", "cap_remaining", "digest
 NO_SUBJECT = "unmatched"
 
 
+def _forms(subject: str) -> list[str]:
+    """The obvious other number of a word: strip or add a trailing ``s``, ``es``,
+    and ``ies`` <-> ``y``. Nothing cleverer."""
+    w = subject.lower()
+    forms = []
+    if w.endswith("ies") and len(w) > 3:
+        forms.append(w[:-3] + "y")
+    if w.endswith("es") and len(w) > 2:
+        forms.append(w[:-2])
+    if w.endswith("s") and len(w) > 1:
+        forms.append(w[:-1])
+    if w.endswith("y") and len(w) > 1:
+        forms.append(w[:-1] + "ies")
+    forms += [w + "s", w + "es"]
+    return forms
+
+
+def _position(text: str, subject: str) -> int:
+    """Where in ``text`` the subject first appears, or -1. The listed word is a
+    plain substring; its singular or plural form must stand as a whole word, so
+    ``trail`` does not match inside "trailer"."""
+    word = subject.lower()
+    found = [text.find(word)]
+    for form in _forms(word):
+        m = re.search(r"(?<![a-z0-9])" + re.escape(form) + r"(?![a-z0-9])", text)
+        found.append(m.start() if m else -1)
+    found = [f for f in found if f >= 0]
+    return min(found) if found else -1
+
+
 def first_subject(question: str, subjects) -> str | None:
     """The allowed subject the question mentions first, ``"unmatched"`` if it
     mentions none, or None when there is no subject list to match against.
 
-    Matching is mitchella's own rule for incident subjects: a case-insensitive
-    substring of the question. "First" is the earliest in the question; a tie
-    goes to the subject listed first in ``policy.yaml``. Only the subject goes
-    in the event — never the words around it.
+    A subject is mentioned when the question contains the listed word (a
+    case-insensitive substring, as in mitchella's rule for incident subjects) or
+    its singular or plural form as a whole word. The mitchella rule does not
+    inflect; the two differ on purpose and only this one is widened. "First" is
+    the earliest in the question; a tie goes to the subject listed first in
+    ``policy.yaml``. What is returned is the word as listed there, never the
+    inflected form. Only the subject goes in the event — never the words around
+    it.
     """
     subjects = [s for s in (subjects or ()) if s]
     if not subjects:
         return None
     text = (question or "").lower()
-    hits = [(text.find(s.lower()), i, s) for i, s in enumerate(subjects)]
+    hits = [(_position(text, s), i, s) for i, s in enumerate(subjects)]
     hits = [h for h in hits if h[0] >= 0]
     return min(hits)[2] if hits else NO_SUBJECT
 
