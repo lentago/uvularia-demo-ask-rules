@@ -4,7 +4,8 @@ Plus one read-only route, ``GET /health``: what the box is serving (the corpus
 digest and the rules tag), whether it is switched on, and how much of today's
 cap is used. It handles no question, claims no cap slot, and calls no model.
 The records vault's watch workflow reads it to notice a stale digest or a cap
-running out (see ``health_body``).
+running out (see ``health_body``), and the rules repo's heartbeat workflow
+calls it every 15 minutes so a quiet box still sends its ``served`` event.
 
 The request path, in order, each guard cheaper than the one it protects:
 
@@ -37,7 +38,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from config import Config
-from telemetry import asked_payload
+from telemetry import asked_payload, first_subject
 
 QUESTION_LOG_LIMIT = 500
 
@@ -108,12 +109,19 @@ def _parse_body(event: dict) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _asked(deps: Deps, start: float, kind: str, question: str, *,
+def _asked(deps: Deps, start: float, kind: str, question: str, deployment, *,
            cap_used=None, cap_remaining=None, degraded=()) -> None:
-    """One ``asked`` event for this turn. Best-effort: the pusher never raises."""
+    """One ``asked`` event for this turn. Best-effort: the pusher never raises.
+
+    ``at`` is when the question arrived; ``subject`` is the first of the rules'
+    allowed subjects the question mentions (see ``telemetry.first_subject``).
+    """
     deps.emit("asked", asked_payload(
-        kind=kind, latency_ms=round((deps.clock() - start) * 1000),
+        at=start, kind=kind, latency_ms=round((deps.clock() - start) * 1000),
         cap_used=cap_used, cap_remaining=cap_remaining,
+        digest=getattr(deployment, "resolved_digest", "") or None,
+        subject=first_subject(question,
+                              getattr(deployment.policy, "allowed_subjects", ())),
         degraded_signals=degraded, question=question))
 
 
@@ -213,7 +221,7 @@ def handle(event: dict, deps: Deps) -> dict:
     if not policy.enabled:
         deps.log({"event": "turn", "kind": "maintenance",
                   "question": question[:QUESTION_LOG_LIMIT]})
-        _asked(deps, now, "maintenance", question)
+        _asked(deps, now, "maintenance", question, deployment)
         return _reply(200, {"kind": "maintenance", "reply": cfg.maintenance_message,
                             "source_ids": [], "degraded_signals": []}, cfg)
 
@@ -230,7 +238,7 @@ def handle(event: dict, deps: Deps) -> dict:
     if not allowed:
         deps.log({"event": "turn", "kind": "capped", "cap": cap,
                   "question": question[:QUESTION_LOG_LIMIT]})
-        _asked(deps, now, "capped", question, cap_used=cap, cap_remaining=0)
+        _asked(deps, now, "capped", question, deployment, cap_used=cap, cap_remaining=0)
         return _reply(429, {"kind": "declined",
                             "reply": "This assistant has answered its limit of questions "
                                      "for today. Please try again tomorrow.",
@@ -243,7 +251,7 @@ def handle(event: dict, deps: Deps) -> dict:
     except SecretUnavailable as exc:
         deps.log({"event": "turn", "kind": "unconfigured", "error": str(exc),
                   "question": question[:QUESTION_LOG_LIMIT]})
-        _asked(deps, now, "unconfigured", question, cap_used=count,
+        _asked(deps, now, "unconfigured", question, deployment, cap_used=count,
                cap_remaining=max(cap - count, 0), degraded=["api-key"])
         return _reply(503, {"kind": "maintenance",
                             "reply": "This assistant is not set up yet. "
@@ -263,7 +271,7 @@ def handle(event: dict, deps: Deps) -> dict:
         "degraded_signals": degraded,
         "question": question[:QUESTION_LOG_LIMIT],
     })
-    _asked(deps, now, answer.kind.value, question, cap_used=count,
+    _asked(deps, now, answer.kind.value, question, deployment, cap_used=count,
            cap_remaining=max(cap - count, 0), degraded=degraded)
 
     return _reply(200, {
@@ -326,7 +334,7 @@ def _build_deps() -> Deps:
         config=cfg,
         get_deployment=lambda now: get_deployment(
             cfg, client, now=now,
-            on_refresh=lambda d: pusher.emit("served", served_payload(d))),
+            on_refresh=lambda d: pusher.emit("served", served_payload(d, at=now))),
         cap_reserve=lambda day, c, now: cap.reserve(day, c, int(now)),
         cap_used=cap.used,
         verify_turnstile=lambda token, ip: turnstile_verify(

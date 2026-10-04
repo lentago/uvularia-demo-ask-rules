@@ -1,14 +1,22 @@
 """Pipeline events from the Ask function to your own Grafana Cloud Loki — optional.
 
-Two events, both in the ``ask`` pipeline:
+Two events, both in the ``ask`` pipeline. Field names follow drosera's event
+contract (``docs/clients/uvularia.md`` in lentago/drosera), which the pipeline
+pane reads:
 
-  * ``served`` — each time the function re-polls and builds a fresh deployment:
-    the corpus digest and the rules tag it is now answering from;
-  * ``asked`` — once per question: the outcome kind, the latency, the cap used
-    and remaining, which signals degraded, and the question truncated to 500
-    characters. Never the origin, the IP, a token, or anything else that says
-    who asked. ``asked_payload`` builds the line from an explicit list of fields,
-    so nothing else can slip in.
+  * ``served`` — each time the function re-polls and builds a fresh deployment,
+    and at least every ``HEARTBEAT_SECONDS`` while it is being called (the rules
+    repo's heartbeat workflow calls ``GET /health`` every 15 minutes): the
+    corpus digest and the rules tag it is answering from, and ``at``;
+  * ``asked`` — once per question: ``at``, the outcome kind, the latency, the
+    cap used and remaining, the digest it answered from, the first allowed
+    subject the question mentions (``subject``), which signals degraded, and the
+    question truncated to 500 characters. Never the origin, the IP, a token, or
+    anything else that says who asked. ``asked_payload`` builds the line from an
+    explicit list of fields, so nothing else can slip in.
+
+``at`` is whole Unix seconds: a Grafana query cannot read a log line's own
+timestamp as a number, so the time rides in the payload.
 
 With no ``loki_push_url`` the pusher is a no-op: nothing is read from SSM and
 nothing is sent. With one, every push is best-effort — a short timeout, and any
@@ -30,30 +38,57 @@ PUSH_TIMEOUT_SECONDS = 2.0
 SOURCE = "uvularia"
 PIPELINE = "ask"
 
-# The only keys an ``asked`` event may carry. A test holds this to the issue's
-# list; adding a field here is a deliberate, reviewed change.
-ASKED_FIELDS = ("kind", "latency_ms", "cap_used", "cap_remaining",
-                "degraded_signals", "question")
+# The only keys an ``asked`` event may carry. A test holds this to the issues'
+# lists (#52, #59); adding a field here is a deliberate, reviewed change.
+ASKED_FIELDS = ("at", "kind", "latency_ms", "cap_used", "cap_remaining", "digest",
+                "subject", "degraded_signals", "question")
+NO_SUBJECT = "unmatched"
 
 
-def asked_payload(*, kind: str, latency_ms: int, cap_used, cap_remaining,
-                  degraded_signals, question: str) -> dict:
+def first_subject(question: str, subjects) -> str | None:
+    """The allowed subject the question mentions first, ``"unmatched"`` if it
+    mentions none, or None when there is no subject list to match against.
+
+    Matching is mitchella's own rule for incident subjects: a case-insensitive
+    substring of the question. "First" is the earliest in the question; a tie
+    goes to the subject listed first in ``policy.yaml``. Only the subject goes
+    in the event — never the words around it.
+    """
+    subjects = [s for s in (subjects or ()) if s]
+    if not subjects:
+        return None
+    text = (question or "").lower()
+    hits = [(text.find(s.lower()), i, s) for i, s in enumerate(subjects)]
+    hits = [h for h in hits if h[0] >= 0]
+    return min(hits)[2] if hits else NO_SUBJECT
+
+
+def asked_payload(*, at: int, kind: str, latency_ms: int, cap_used, cap_remaining,
+                  digest, subject, degraded_signals, question: str) -> dict:
     """One question's event. Keyword-only, so a caller cannot pass the request
-    (and with it the origin or IP) by accident."""
-    return {
+    (and with it the origin or IP) by accident. ``subject`` is None when the
+    rules list no subjects, and is then left out: nobody knows it."""
+    payload = {
+        "at": int(at),
         "kind": kind,
         "latency_ms": latency_ms,
         "cap_used": cap_used,
         "cap_remaining": cap_remaining,
+        "digest": digest or None,
+        "subject": subject,
         "degraded_signals": list(degraded_signals or ()),
         "question": (question or "")[:QUESTION_LIMIT],
     }
+    if subject is None:
+        del payload["subject"]
+    return payload
 
 
-def served_payload(deployment) -> dict:
-    """What the box is answering from after a refresh. ``digest`` is None while
+def served_payload(deployment, *, at: float) -> dict:
+    """What the box is answering from, as of ``at``. ``digest`` is None while
     the box is paused (a paused box loads no corpus)."""
     return {
+        "at": int(at),
         "digest": getattr(deployment, "resolved_digest", "") or None,
         "rules_tag": getattr(deployment, "resolved_tag", "") or None,
         "enabled": bool(getattr(getattr(deployment, "policy", None), "enabled", False)),

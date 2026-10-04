@@ -1,0 +1,55 @@
+# ============================================================================
+# heartbeat — wake the Ask box every 15 minutes so it reports what it serves
+# ============================================================================
+# Optional; does nothing until you set the ASK_HEALTH_URL repository variable
+# (Settings → Secrets and variables → Actions → Variables) to your Ask
+# function's URL ending in /health.
+#
+# The Ask function sends a `served` event (the corpus digest and the rules tag
+# it is answering from) each time it checks for new rules or records. But it
+# only runs when called, so on a quiet afternoon with no questions it would say
+# nothing, and the pipeline pane's "served digest behind published" alert could
+# not tell a quiet box from a stale one. This reads GET /health every 15 minutes:
+# the function re-checks what it serves and sends `served` with the answer.
+#
+# /health claims no slot of the daily question cap and calls no model; it costs
+# one short Lambda invocation (well inside the free tier). The Loki side is the
+# function's own: this workflow needs no Loki secret and no token of any kind.
+#
+# A box that does not answer is a warning on this run, not a failure: GitHub
+# would otherwise email you every 15 minutes. The pane's Served panel going
+# stale, and the records vault's watch workflow, are where you notice.
+#
+# GitHub runs schedules on a best-effort basis (often some minutes late), and
+# pauses them in a public repository with no activity for 60 days. The function
+# also reports on every refresh it makes for a question, so a busy box is never
+# silent; this covers the quiet hours.
+# ============================================================================
+
+name: heartbeat
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Read the Ask box's /health
+        env:
+          ASK_HEALTH_URL: ${{ vars.ASK_HEALTH_URL }}
+        run: |
+          if [ -z "$ASK_HEALTH_URL" ]; then
+            echo "::notice title=heartbeat::ASK_HEALTH_URL is not set; nothing to ping. Set it to your Ask function's URL ending in /health."
+            exit 0
+          fi
+          if body=$(curl --silent --show-error --fail --max-time 30 "$ASK_HEALTH_URL" 2>&1); then
+            echo "heartbeat: $body"
+          else
+            echo "::warning title=heartbeat::the Ask box did not answer /health ($body)"
+          fi

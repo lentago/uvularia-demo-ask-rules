@@ -1,8 +1,8 @@
 """Read the handful of scalars the function needs out of ``policy.yaml``.
 
 ``policy.yaml`` is the governance half of the rules release — the kill switch,
-the model pin, the daily cap, and the disclaimer. The function pulls only the few
-scalars it acts on, and it does so with a deliberate one-key reader rather than a
+the model pin, the daily cap, the disclaimer, and the allowed subjects. The
+function pulls only the few values it acts on, and it does so with a deliberate one-key reader rather than a
 YAML library, so the function's dependency list stays at mitchella + anthropic +
 the runtime's boto3. This mirrors ``evals/run.py`` in the rules template, which
 reads the same file the same way.
@@ -29,12 +29,43 @@ def _scan_scalar(text: str, key: str):
     return value
 
 
+def _scan_list(text: str, key: str) -> tuple[str, ...]:
+    """A top-level ``key:`` list of plain strings, block (``- a``) or flow
+    (``[a, b]``) style. Comments and quotes are stripped; empty when absent."""
+    m = re.search(rf"^{re.escape(key)}:[ \t]*(.*)$", text, re.MULTILINE)
+    if not m:
+        return ()
+    rest = m.group(1).split("#", 1)[0].strip()
+    if rest.startswith("["):
+        items = rest.strip("[]").split(",")
+    elif rest:
+        return ()
+    else:
+        items = []
+        for line in text[m.end():].splitlines()[1:]:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            item = re.match(r"^\s+-\s*(.*)$", line)
+            if not item:
+                break
+            items.append(item.group(1))
+    out = []
+    for item in items:
+        item = item.split("#", 1)[0].strip().strip("\"'").strip()
+        if item:
+            out.append(item)
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class Policy:
     enabled: bool
     model: str
     daily_cap: int | None
     disclaimer: str
+    # The subjects the records cover, in the file's order. Only telemetry reads
+    # them: an ``asked`` event names the first one a question mentions.
+    allowed_subjects: tuple[str, ...] = ()
 
 
 def parse_policy(text: str, *, default_model: str = "claude-sonnet-5-5") -> Policy:
@@ -58,4 +89,5 @@ def parse_policy(text: str, *, default_model: str = "claude-sonnet-5-5") -> Poli
 
     disclaimer = _scan_scalar(text, "disclaimer") or ""
 
-    return Policy(enabled=enabled, model=model, daily_cap=daily_cap, disclaimer=disclaimer)
+    return Policy(enabled=enabled, model=model, daily_cap=daily_cap, disclaimer=disclaimer,
+                  allowed_subjects=_scan_list(text, "allowed_subjects"))

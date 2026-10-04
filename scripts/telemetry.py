@@ -12,6 +12,7 @@ Grafana Cloud Loki. It never sends anything itself and never fails the job.
         --branch-exists false --pr-result opened --pr-number 43
     python3 scripts/telemetry.py evals --summary evals-summary.json --corpus present
     python3 scripts/telemetry.py rules_released --tag rules-v7
+    python3 scripts/telemetry.py intake --scheduled --snapshot intake-snapshot.json
 
 It reads its configuration from the environment the workflow passes in:
 
@@ -28,6 +29,19 @@ and writes three step outputs to ``$GITHUB_OUTPUT``: ``enabled`` ("true" or
 stage's detail — counts, digests, outcomes. It never carries a person's name,
 an email, or anything typed into an issue beyond its number.
 
+Every payload carries ``at``: epoch seconds of the thing the event is about.
+For a publish that is the receipt's ``published_at``, the server-side publish
+time; for everything else it is this run's own clock. A Grafana query cannot
+read a log line's own timestamp as a number, so the time rides in the payload.
+
+``--snapshot FILE`` merges counts another script has already gathered (the
+records template's ``scripts/pipeline_snapshot.py``: open intake, pull requests
+waiting on a reviewer, announcement latency). Only the fields listed for the
+stage in ``SNAPSHOT_FIELDS`` are taken, and only as whole numbers; a missing or
+unreadable file adds nothing, so the dashboard reads "no data", not zero.
+``--scheduled`` marks the daily snapshot run: it is about no single issue or
+pull request, so its event carries the snapshot and nothing else.
+
 The same file ships in the records and the rules templates; uvularia's own CI
 keeps the two copies byte-identical. Python 3.12, standard library only.
 """
@@ -37,9 +51,20 @@ import json
 import os
 import re
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 STAGES = ("intake", "reviewed", "published", "evals", "rules_released")
+
+# The fields --snapshot may add, per stage. Field names are drosera's event
+# contract (docs/clients/uvularia.md in lentago/drosera); anything else in the
+# file is ignored, so nothing can ride along by accident.
+SNAPSHOT_FIELDS = {
+    "intake": ("open", "oldest_opened_at"),
+    "reviewed": ("awaiting", "oldest_green_at"),
+    "published": ("announcement_latency_s",),
+}
 NOT_CONFIGURED = ("telemetry not configured — set the LOKI_PUSH_URL variable and the "
                   "LOKI_WRITE_TOKEN secret to send pipeline events to your Grafana Cloud Loki")
 
@@ -107,6 +132,36 @@ def _int_or_none(value):
         return None
 
 
+def epoch_seconds(value):
+    """``2026-10-04T12:00:00Z`` as whole Unix seconds, or None if unreadable."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())
+
+
+def snapshot_fields(stage, path):
+    """The allowed ``--snapshot`` fields for this stage, whole numbers only.
+
+    A field the file does not carry is left out — never filled with zero — so a
+    snapshot that could not be taken reads as "no data" on the dashboard.
+    """
+    data = _read_json(path) if path else None
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for key in SNAPSHOT_FIELDS.get(stage, ()):
+        value = data.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            out[key] = value
+    return out
+
+
 def receipt_record_counts(text):
     """``{added, changed, retracted}`` counts from a receipt's frontmatter.
 
@@ -130,6 +185,8 @@ def receipt_record_counts(text):
 def intake_payload(a):
     """Returns None for an issue that is not the "Add a record" form — it is not
     part of the pipeline, so it is not an event."""
+    if a.scheduled:
+        return {}
     if a.is_form != "true":
         return None
     if a.scaffold != "success":
@@ -144,6 +201,8 @@ def intake_payload(a):
 
 
 def reviewed_payload(a):
+    if a.scheduled:
+        return {}
     return {"pr": _int_or_none(a.pr), "validate": a.validate or "skipped",
             "standing": standing_summary(_read_json(a.standing))}
 
@@ -188,11 +247,18 @@ BUILDERS = {
 }
 
 
-def build_payload(stage, args, env):
+def build_payload(stage, args, env, now=None):
     """The stage payload plus the run's identity, or None for "no event"."""
     body = BUILDERS[stage](args)
     if body is None:
         return None
+    body.update(snapshot_fields(stage, args.snapshot))
+    if args.scheduled and not body:
+        return None    # a snapshot run that gathered nothing has nothing to say
+    if stage == "published":
+        body["at"] = epoch_seconds(body.get("published_at"))
+    else:
+        body["at"] = int(time.time() if now is None else now)
     body["job_status"] = args.job_status or "unknown"
     body["run_id"] = env.get("GITHUB_RUN_ID") or None
     body["sha"] = env.get("GITHUB_SHA") or None
@@ -207,6 +273,9 @@ def _parser():
     p = argparse.ArgumentParser(description="Build one uvularia telemetry event for this run.")
     p.add_argument("stage", choices=STAGES)
     p.add_argument("--job-status", help="the job's status so far (success / failure)")
+    p.add_argument("--snapshot", help="JSON file of counts to add (see SNAPSHOT_FIELDS)")
+    p.add_argument("--scheduled", action="store_true",
+                   help="the daily snapshot run: no single issue or pull request")
     # intake
     p.add_argument("--issue")
     p.add_argument("--is-form")
@@ -238,7 +307,7 @@ def _write_outputs(outputs, env):
         sys.stdout.write(lines)
 
 
-def main(argv=None, env=None):
+def main(argv=None, env=None, now=None):
     env = os.environ if env is None else env
     args = _parser().parse_args(argv)
     enabled, message = config_state(env)
@@ -250,7 +319,7 @@ def main(argv=None, env=None):
         _write_outputs(outputs, env)
         return 0
     try:
-        payload = build_payload(args.stage, args, env)
+        payload = build_payload(args.stage, args, env, now)
     except Exception as exc:  # noqa: BLE001 — telemetry never fails the job
         print(f"::warning title=telemetry::could not describe the {args.stage} stage ({exc}); no event sent")
         _write_outputs(outputs, env)

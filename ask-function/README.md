@@ -108,12 +108,26 @@ the box falls behind a publish, or if the day's cap passes 80 %.
 a free Grafana Cloud account you own. Grafana Cloud is a hosted dashboard service;
 its log store is called **Loki**.
 
-- `served`: each time the box re-polls, the corpus digest and rules tag it is now
-  answering from;
-- `asked`: once per question, the outcome (`kind`), how long it took, how much
-  of today's cap is used and left, which signals degraded, and the question cut
-  to 500 characters. **Never** the asker's origin, IP address, or anything else
-  that says who asked.
+- `served`: each time the box re-polls, and at least every 10 minutes while
+  it's being called, the corpus `digest` and `rules_tag` it is answering from;
+- `asked`: once per question, the outcome (`kind`), how long it took
+  (`latency_ms`), how much of today's cap is used and left, the `digest` it
+  answered from, the `subject` (see below), which signals degraded, and the
+  question cut to 500 characters. **Never** the asker's origin, IP address, or
+  anything else that says who asked.
+
+Both carry `at`, the time in Unix seconds. The pane reads these field names
+from drosera's event contract.
+
+`subject` is the first of your rules' `allowed_subjects` (in `policy.yaml`)
+that the question mentions, matched without regard to case; `unmatched` if it
+mentions none. It is always one of your own listed words, never the question's.
+The pane's demand loop groups the questions the box couldn't answer by it. A
+rules release with no `allowed_subjects` list sends no `subject` at all.
+
+A box nobody calls sends nothing. To keep `served` arriving on quiet days, set
+up the rules repo's heartbeat (its README, **Keep a quiet box reporting**). It
+reads `GET /health` every 15 minutes, which uses none of the cap.
 
 **Why bother:** next to your vault's and rules repo's events, you can see that the
 box is serving the digest you just published and how it's answering. **Skip this
@@ -192,7 +206,7 @@ you it was working with less than the full picture.
 | `src/cap.py` | the durable DynamoDB daily cap (atomic conditional increment) |
 | `src/secrets.py` | reads the Anthropic key from SSM at cold start |
 | `src/turnstile.py` | the bot check (off by default) |
-| `src/policy.py` | reads the kill switch, model, cap, and disclaimer from `policy.yaml` |
+| `src/policy.py` | reads the kill switch, model, cap, disclaimer, and allowed subjects from `policy.yaml` |
 | `src/config.py` | the deploy-time settings, from the environment |
 | `src/telemetry.py` | the optional `served` / `asked` events to your Grafana Cloud Loki; a no-op when unset |
 | `src/loki_push.py` | drosera's Loki push client, vendored unchanged (the header names the commit) |
