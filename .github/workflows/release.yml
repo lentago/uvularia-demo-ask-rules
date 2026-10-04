@@ -53,3 +53,33 @@ jobs:
             --title "$TAG" \
             --target "$GITHUB_SHA" \
             --notes "Rules release pinned by the Ask function. Assets: policy.yaml, instructions.md. Roll back by pinning the previous rules-vN."
+
+      # --- Telemetry (optional; see README "Watch the pipeline") ---------------
+      # Records which rules release is now the one the Ask function can pin, in
+      # your own Grafana Cloud Loki when LOKI_PUSH_URL is set. Unset, it prints
+      # one "telemetry not configured" line. Neither step can fail the release.
+      - name: Telemetry — describe this release
+        id: telemetry
+        if: always()
+        continue-on-error: true
+        env:
+          LOKI_PUSH_URL: ${{ vars.LOKI_PUSH_URL }}
+          LOKI_CLUSTER: ${{ vars.LOKI_CLUSTER }}
+          LOKI_TOKEN_SET: ${{ secrets.LOKI_WRITE_TOKEN != '' }}
+          JOB_STATUS: ${{ job.status }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: python3 scripts/telemetry.py rules_released --tag "$TAG" --job-status "$JOB_STATUS"
+
+      - name: Telemetry — push the rules_released event
+        if: always() && steps.telemetry.outputs.enabled == 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: lentago/drosera/.github/actions/loki-event@main
+        with:
+          loki_url: ${{ vars.LOKI_PUSH_URL }}
+          loki_token: ${{ secrets.LOKI_WRITE_TOKEN }}
+          cluster: ${{ steps.telemetry.outputs.cluster }}
+          source: uvularia
+          pipeline: rules
+          stage: rules_released
+          payload-json: ${{ steps.telemetry.outputs.payload }}

@@ -161,8 +161,13 @@ def build(cfg, client, *, now: float, http_get=_http_get) -> Deployment:
 _STATE: dict = {"deployment": None}
 
 
-def get_deployment(cfg, client, *, now: float | None = None, http_get=_http_get) -> Deployment:
-    """Return a cached deployment, re-polling once ``refresh_seconds`` has passed."""
+def get_deployment(cfg, client, *, now: float | None = None, http_get=_http_get,
+                   on_refresh=None) -> Deployment:
+    """Return a cached deployment, re-polling once ``refresh_seconds`` has passed.
+
+    ``on_refresh`` is called with each freshly built deployment — the ``served``
+    telemetry event hangs off it. It must not raise (the pusher never does).
+    """
     if now is None:
         now = time.time()
     current = _STATE["deployment"]
@@ -170,4 +175,6 @@ def get_deployment(cfg, client, *, now: float | None = None, http_get=_http_get)
         return current
     fresh = build(cfg, client, now=now, http_get=http_get)
     _STATE["deployment"] = fresh
+    if on_refresh is not None:
+        on_refresh(fresh)
     return fresh

@@ -22,6 +22,9 @@
 #   AWS_REGION            the region to deploy into
 #   ASK_PUBLISHED_BASE_URL, ASK_ALLOWED_ORIGIN, ASK_API_KEY_SSM_PATH
 #                         the module's client-specific inputs (see its variables)
+#   LOKI_PUSH_URL, LOKI_WRITE_TOKEN_SSM_PATH, LOKI_CLUSTER
+#                         optional: pipeline events to your own Grafana Cloud
+#                         Loki. Unset, the function sends none.
 #
 # The box's own guards (cap, SSM key, Turnstile) mean this workflow grants no
 # secret beyond the OIDC role's own permissions.
@@ -49,6 +52,10 @@ env:
   TF_VAR_allowed_origin: ${{ vars.ASK_ALLOWED_ORIGIN }}
   TF_VAR_anthropic_api_key_ssm_path: ${{ vars.ASK_API_KEY_SSM_PATH }}
   TF_VAR_rules_repo: ${{ github.repository }}
+  # Optional pipeline events; empty values leave the function's pusher a no-op.
+  TF_VAR_loki_push_url: ${{ vars.LOKI_PUSH_URL }}
+  TF_VAR_loki_write_token_ssm_path: ${{ vars.LOKI_WRITE_TOKEN_SSM_PATH }}
+  TF_VAR_loki_cluster: ${{ vars.LOKI_CLUSTER }}
 
 concurrency:
   group: deploy-ask

@@ -89,6 +89,29 @@ variable "maintenance_message" {
   default     = "This records assistant is paused for maintenance. The published records and the board are still available."
 }
 
+# --- pipeline events (optional) ---------------------------------------------
+# Leave loki_push_url empty and the function sends nothing and reads no extra
+# secret. Set both to send one event per refresh and per question to your own
+# Grafana Cloud Loki (see the README's "Watch the pipeline").
+
+variable "loki_push_url" {
+  description = "Grafana Cloud Loki URL (https://logs-prod-NNN.grafana.net). Empty disables pipeline events."
+  type        = string
+  default     = ""
+}
+
+variable "loki_write_token_ssm_path" {
+  description = "Path of the SSM SecureString holding '<instance-id>:<token>' (logs:write only). Created out of band, like the API key."
+  type        = string
+  default     = ""
+}
+
+variable "loki_cluster" {
+  description = "The cluster label on each event: your org slug. Empty uses the rules repo's owner, lowercased."
+  type        = string
+  default     = ""
+}
+
 # --- the role ----------------------------------------------------------------
 
 variable "permissions_boundary" {
