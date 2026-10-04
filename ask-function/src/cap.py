@@ -79,3 +79,18 @@ class DailyCap:
             if _is_conditional_failure(exc):
                 return False, cap
             raise
+
+    def used(self, day: str) -> int:
+        """How many answers ``day`` has used so far, without claiming one.
+
+        A read, never a write: ``GET /health`` reports the cap with this, so
+        checking on the box cannot spend a slot. A day with no row yet is 0.
+        """
+        resp = self._client().get_item(
+            TableName=self.table_name,
+            Key={"day": {"S": day}},
+            ProjectionExpression="#c",
+            ExpressionAttributeNames={"#c": "count"},
+        )
+        item = resp.get("Item") or {}
+        return int(item.get("count", {}).get("N", "0"))

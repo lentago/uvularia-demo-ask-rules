@@ -36,13 +36,14 @@ class FakeAnswer:
 
 
 class FakeDeployment:
-    def __init__(self, policy, engine=object(), digest="deadbeef"):
+    def __init__(self, policy, engine=object(), digest="deadbeef", tag="rules-v1"):
         self.policy = policy
         self.engine = engine
         self.resolved_digest = digest
+        self.resolved_tag = tag
 
 
-def make_event(method="POST", body=None, origin=None, raw_body=None):
+def make_event(method="POST", body=None, origin=None, raw_body=None, path="/"):
     """A minimal Function URL (payload v2.0) event."""
     import json
 
@@ -56,6 +57,7 @@ def make_event(method="POST", body=None, origin=None, raw_body=None):
     else:
         payload = ""
     return {
+        "rawPath": path,
         "requestContext": {"http": {"method": method, "sourceIp": "203.0.113.7"}},
         "headers": headers,
         "body": payload,
