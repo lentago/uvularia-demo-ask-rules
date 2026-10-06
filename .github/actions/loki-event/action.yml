@@ -1,0 +1,60 @@
+# Vendored unchanged from lentago/drosera .github/actions/loki-event at commit
+# f047e2af917ca784aeff918ebffe9d601dc6761b (drosera#219). Everything below this
+# six-line header is byte-identical to upstream action.yml, and push.sh beside it
+# is byte-identical to upstream push.sh. Upstream sha256 (action.yml, push.sh):
+# 4500b456be6fe3b6da37a97daf28bd0538d809c69f0c1126016e214dbf776797
+# 6a3da5b322082aeb44fc45de7f5bfbb60a626bf2b951edfcd62011ffc49dc19e
+name: loki-event
+description: >-
+  Push one structured event (a single JSON log line) to a Grafana Cloud Loki
+  push endpoint. POSIX sh + curl + jq; no third-party actions. See README.md.
+
+inputs:
+  loki_url:
+    description: >-
+      Loki base URL, e.g. https://logs-prod-012.grafana.net (the
+      /loki/api/v1/push path is appended if missing).
+    required: true
+  loki_token:
+    description: >-
+      Basic-auth pair "<loki-instance-id>:<access-policy-token>" with the
+      logs:write scope. Pass from a secret; never inline.
+    required: true
+  cluster:
+    description: Cluster label — the owning org slug (e.g. lentago).
+    required: true
+  source:
+    description: Emitting product slug (e.g. uvularia). Forms log_source=<source>_<stage>.
+    required: true
+  pipeline:
+    description: Pipeline slug within the source (e.g. vault-publish).
+    required: true
+  stage:
+    description: Stage slug within the pipeline (e.g. publish). Forms log_source=<source>_<stage>.
+    required: true
+  repo:
+    description: Repository the event is about, owner/name.
+    required: false
+    default: ${{ github.repository }}
+  payload-json:
+    description: >-
+      JSON object to send as the log line. Per-run detail (run ID, SHA,
+      counts, durations) belongs here, not in labels.
+    required: false
+    default: "{}"
+
+runs:
+  using: composite
+  steps:
+    - name: Push event to Loki
+      shell: sh
+      env:
+        LE_LOKI_URL: ${{ inputs.loki_url }}
+        LE_LOKI_TOKEN: ${{ inputs.loki_token }}
+        LE_CLUSTER: ${{ inputs.cluster }}
+        LE_SOURCE: ${{ inputs.source }}
+        LE_PIPELINE: ${{ inputs.pipeline }}
+        LE_STAGE: ${{ inputs.stage }}
+        LE_REPO: ${{ inputs.repo }}
+        LE_PAYLOAD_JSON: ${{ inputs.payload-json }}
+      run: '"$GITHUB_ACTION_PATH/push.sh"'
