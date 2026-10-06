@@ -74,7 +74,7 @@ jobs:
         if: always() && steps.telemetry.outputs.enabled == 'true'
         continue-on-error: true
         timeout-minutes: 1
-        uses: lentago/drosera/.github/actions/loki-event@main
+        uses: ./.github/actions/loki-event
         with:
           loki_url: ${{ vars.LOKI_PUSH_URL }}
           loki_token: ${{ secrets.LOKI_WRITE_TOKEN }}
