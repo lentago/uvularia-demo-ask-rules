@@ -190,6 +190,7 @@ resource "aws_lambda_function" "this" {
       UVULARIA_LOKI_PUSH_URL             = var.loki_push_url
       UVULARIA_LOKI_TOKEN_SSM_PATH       = var.loki_write_token_ssm_path
       UVULARIA_LOKI_CLUSTER              = var.loki_cluster
+      UVULARIA_QUESTION_LOG_CHARS        = tostring(var.question_log_chars)
     }
   }
 

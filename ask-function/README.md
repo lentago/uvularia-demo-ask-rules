@@ -1,11 +1,14 @@
 # The Ask function
 
 A small AWS Lambda that runs [mitchella](https://github.com/lentago/mitchella)'s
-engine as the brain behind your site's Ask box. It answers only from your
-published records, leads with what the board shows when an obligation is in
-breach, cites the records it used, and refuses the rest. It is the Platform-tier
-piece of uvularia (Phase 1); the vault, the board, and the rules repo stand on
-their own without it.
+engine as the brain behind your site's Ask box. It is a **source-linked
+assistant**: it answers questions about your published records, links every
+answer to the records it cites, leads with what the board shows when an
+obligation is in breach, and refuses the rest. Its answers still need checking,
+so the site's widget shows the sources with your contact beside them (see
+[Answers need checking](#answers-need-checking)). It is the Platform-tier piece
+of uvularia (Phase 1); the vault, the board, and the rules repo stand on their
+own without it.
 
 ## What you're about to do
 
@@ -18,8 +21,10 @@ reads three things at the versions you pin:
   cannot claim compliance the board denies.
 
 It puts a public Function URL in front of mitchella and nothing else: no
-database of questions, no login, no stored identity. The site's Ask widget POSTs
-a question to the URL and renders the reply and the citations.
+database of questions, no login, no stored identity. (The turn log does keep a
+cut-down copy of each question; see
+[Questions and privacy](#questions-and-privacy).) The site's Ask widget POSTs a
+question to the URL and renders the reply and the citations.
 
 ## Why bother
 
@@ -34,8 +39,11 @@ hardening lives, and each guard has a reason:
 - **A kill switch you can throw in seconds.** Set `enabled: false` in
   `policy.yaml`, cut a release, and within the refresh window the box returns a
   maintenance line and answers nothing. No code change, no redeploy.
-- **Citations are the ones the engine verified**, not the passages that were
-  sent. An id the model invents is dropped before you ever see it.
+- **An answer always cites at least one real record.** The engine drops any cited
+  id that is not a record in your corpus, so an id the model invents never
+  reaches the page. If that leaves an `answered` reply with no record at all,
+  the function does not send it as an answer: the reader gets the escalation
+  reply instead, and the turn log calls it `unsourced`.
 - **A bot check in front** (Cloudflare Turnstile), off by default so local and CI
   runs need no secret, on when you face the open web.
 - **CORS locked to one origin** — your site, and nothing else in a browser.
@@ -82,7 +90,28 @@ merge over GitHub OIDC, so no AWS keys live in a secret.
 - Flip `policy.yaml` to `enabled: false`, cut a release, wait the refresh window,
   and the same question comes back `{"kind":"maintenance",…}`.
 - The turn log in CloudWatch shows the outcome, the latency, and the question
-  truncated to 500 characters — and no origin, IP, or identity.
+  cut to `question_log_chars` characters (500 unless you lower it; see
+  [Questions and privacy](#questions-and-privacy)) — and no origin, IP, or
+  identity.
+
+## Answers need checking
+
+A source link shows which records an answer drew on. It does not prove the
+answer. The engine checks that each cited id is a real record in your corpus. It
+does not check that the record says what the answer says. So:
+
+- the site's widget shows the sources under every answer, with a line asking the
+  reader to check them and your contact beside it;
+- an answer with no real record behind it is never shown as an answer (it comes
+  back as `escalated`);
+- an answer that cites a real record and still gets it wrong is possible. Your
+  rules repo's golden set (`evals/golden.jsonl`) catches the cases you know
+  about. The engine's own eval set, for unsupported claims, prompt injection,
+  refusals, and stale records, is
+  [lentago/mitchella#11](https://github.com/lentago/mitchella/issues/11).
+
+Describe the box to your readers the same way: an assistant that points them to
+the records, not an authority on them.
 
 ## Check on it: `GET /health`
 
@@ -113,8 +142,9 @@ its log store is called **Loki**.
 - `asked`: once per question, the outcome (`kind`), how long it took
   (`latency_ms`), how much of today's cap is used and left, the `digest` it
   answered from, the `subject` (see below), which signals degraded, and the
-  question cut to 500 characters. **Never** the asker's origin, IP address, or
-  anything else that says who asked.
+  question cut to `question_log_chars` characters (500 unless you lower it; see
+  [Questions and privacy](#questions-and-privacy)). **Never** the asker's
+  origin, IP address, or anything else that says who asked.
 
 Both carry `at`, the time in Unix seconds. The pane reads these field names
 from drosera's event contract.
@@ -161,6 +191,48 @@ answer goes out unchanged.
 Loki and run `{source="uvularia", pipeline="ask"} | json`. You'll see a `served`
 event from the first refresh and an `asked` event for your question.
 
+## Questions and privacy
+
+**What you are about to do:** see where a reader's question goes, and keep less
+of it if you want to.
+
+**Why bother:** your records are public, but a question may not be. People type
+their name, their address, or a neighbour's situation into a box like this.
+
+Each question goes to up to three places, all under accounts you hold:
+
+| Where | What it gets | How long it stays |
+|---|---|---|
+| The model provider (Anthropic, on your own API key) | the whole question; that is how the answer is made, and no setting here changes it | what your account's terms with the provider say |
+| CloudWatch, in your AWS account | the turn log line: the outcome, latency, cap, cited ids, and the question cut to `question_log_chars` characters | `log_retention_days` (30 by default) |
+| Your Grafana Cloud Loki, only if you set `loki_push_url` | the `asked` event, with the question cut the same way | your Grafana stack's log retention |
+
+None of them gets the asker's IP address, origin, or a token. The site's widget
+sends only the question, and keeps the conversation in the reader's own browser
+tab.
+
+**How long:** one apply. Set `question_log_chars` in `terraform.tfvars`:
+
+```hcl
+question_log_chars = 100   # keep the first 100 characters
+question_log_chars = 0     # keep no question text at all
+```
+
+With the deploy workflow, set the repository variable `ASK_QUESTION_LOG_CHARS`
+instead and run **deploy-ask** from the Actions tab. The default is 500, which is
+also the most it keeps. At 0 the `question` field is left out of both the log
+line and the event. The outcome, latency, cap, and `subject` are still recorded,
+so the pane's demand loop still groups unanswered questions by subject; its
+"last question" shows nothing.
+
+**How you know it worked:** ask one question, then open the newest line in the
+`/aws/lambda/<name_prefix>-ask` log group. Its `question` is no longer than your
+setting, or not there at all at 0.
+
+Whether to tell your readers that questions are logged, and in what words, is
+your decision. The site's `askDisclaimer` line under the box is one place to say
+it.
+
 ## What it costs
 
 - **Lambda, DynamoDB, CloudWatch: free tier.** The function is invoked per
@@ -188,15 +260,23 @@ event from the first refresh and an `asked` event for your question.
 {
   "kind": "answered | incident | escalated | declined | maintenance",
   "reply": "the text to show the reader",
-  "source_ids": ["ids the engine verified against the corpus"],
+  "source_ids": ["record ids the reply cites, each one a real record in the corpus"],
   "degraded_signals": ["any signal source that could not be read"]
 }
 ```
 
-`source_ids` carries only citations the engine's gate confirmed are real
-records. `degraded_signals` is non-empty when a signal source (standing,
-announcements, overrides) could not be read — the box still answers, but it tells
-you it was working with less than the full picture.
+`source_ids` carries only cited ids that are real records in your corpus. An
+`answered` reply always has at least one. A reply that would have had none comes
+back as `escalated`, saying the box can't point to a record and won't guess. A
+real id means the record exists, not that it backs every word of the reply (see
+[Answers need checking](#answers-need-checking)). `degraded_signals` is
+non-empty when a signal source (standing, announcements, overrides) could not be
+read — the box still answers, but it tells you it was working with less than the
+full picture.
+
+The turn log and the `asked` event name a fallback by its own `kind`: `capped`,
+`unconfigured`, or `unsourced` (an answer with no real record, sent to the reader
+as `escalated`).
 
 ## Layout
 

@@ -112,6 +112,22 @@ variable "loki_cluster" {
   default     = ""
 }
 
+# --- question logging --------------------------------------------------------
+# A question can carry personal information even though the records are public.
+# This bounds how much of it the turn log (CloudWatch) and the asked event (Loki)
+# keep. It does not change what is sent to the model provider.
+
+variable "question_log_chars" {
+  description = "Characters of each question kept in the turn log and the asked event, 0 to 500. 0 keeps no question text; the outcome, latency, cap and subject are still logged."
+  type        = number
+  default     = 500
+
+  validation {
+    condition     = var.question_log_chars >= 0 && var.question_log_chars <= 500 && floor(var.question_log_chars) == var.question_log_chars
+    error_message = "question_log_chars must be a whole number from 0 to 500."
+  }
+}
+
 # --- the role ----------------------------------------------------------------
 
 variable "permissions_boundary" {

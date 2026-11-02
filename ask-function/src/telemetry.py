@@ -11,9 +11,11 @@ pane reads:
   * ``asked`` — once per question: ``at``, the outcome kind, the latency, the
     cap used and remaining, the digest it answered from, the first allowed
     subject the question mentions (``subject``), which signals degraded, and the
-    question truncated to 500 characters. Never the origin, the IP, a token, or
-    anything else that says who asked. ``asked_payload`` builds the line from an
-    explicit list of fields, so nothing else can slip in.
+    question truncated to 500 characters (or fewer: the handler passes what
+    ``question_log_chars`` allows, and None leaves ``question`` out). Never the
+    origin, the IP, a token, or anything else that says who asked.
+    ``asked_payload`` builds the line from an explicit list of fields, so nothing
+    else can slip in.
 
 ``at`` is whole Unix seconds: a Grafana query cannot read a log line's own
 timestamp as a number, so the time rides in the payload.
@@ -98,10 +100,12 @@ def first_subject(question: str, subjects) -> str | None:
 
 
 def asked_payload(*, at: int, kind: str, latency_ms: int, cap_used, cap_remaining,
-                  digest, subject, degraded_signals, question: str) -> dict:
+                  digest, subject, degraded_signals, question: str | None) -> dict:
     """One question's event. Keyword-only, so a caller cannot pass the request
     (and with it the origin or IP) by accident. ``subject`` is None when the
-    rules list no subjects, and is then left out: nobody knows it."""
+    rules list no subjects, and is then left out: nobody knows it. ``question``
+    is None when the deployment logs no question text, and is then left out
+    too, rather than sent as an empty string that looks like an empty question."""
     payload = {
         "at": int(at),
         "kind": kind,
@@ -115,6 +119,8 @@ def asked_payload(*, at: int, kind: str, latency_ms: int, cap_used, cap_remainin
     }
     if subject is None:
         del payload["subject"]
+    if question is None:
+        del payload["question"]
     return payload
 
 
