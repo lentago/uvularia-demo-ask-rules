@@ -39,7 +39,7 @@ hardening lives, and each guard has a reason:
 - **A kill switch you can throw in seconds.** Set `enabled: false` in
   `policy.yaml`, cut a release, and within the refresh window the box returns a
   maintenance line and answers nothing. No code change, no redeploy.
-- **An answer always cites at least one real record.** The engine drops any cited
+- **An `answered` reply always cites at least one real record.** The engine drops any cited
   id that is not a record in your corpus, so an id the model invents never
   reaches the page. If that leaves an `answered` reply with no record at all,
   the function does not send it as an answer: the reader gets the escalation
