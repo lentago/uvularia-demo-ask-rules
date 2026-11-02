@@ -118,9 +118,11 @@ same token), about fifteen if not.
    - optionally, add a `LOKI_CLUSTER` variable with your organization's short
      name (the default is this repository's owner, lowercased).
 
-What goes out, through drosera's
+What goes out, through the `loki-event` step in
+[`.github/actions/loki-event/`](.github/actions/loki-event/action.yml) (a copy of
+drosera's
 [`loki-event`](https://github.com/lentago/drosera/tree/main/.github/actions/loki-event)
-step:
+that lives in this repository, so your workflows depend on nothing outside it):
 
 | Workflow | Event (`stage`) | What it carries |
 |---|---|---|
@@ -180,6 +182,10 @@ On merge to `main`, [`release.yml`](.github/workflows/release.yml) tags
 version and advances only when you cut a new one; rolling back is pinning the
 previous `rules-vN`. A release is the unit of "this is how the box behaves now",
 and it is reversible.
+
+## License
+
+The template's code and scaffolding are MIT-licensed; see [LICENSE](LICENSE). The rules your organization writes are yours, under whatever terms you choose.
 
 ---
 

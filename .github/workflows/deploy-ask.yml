@@ -25,6 +25,11 @@
 #   LOKI_PUSH_URL, LOKI_WRITE_TOKEN_SSM_PATH, LOKI_CLUSTER
 #                         optional: pipeline events to your own Grafana Cloud
 #                         Loki. Unset, the function sends none.
+#   ASK_QUESTION_LOG_CHARS
+#                         optional: how much of each question the turn log and
+#                         the asked event keep, 0 to 500. Unset, 500; 0 keeps no
+#                         question text (the Ask function README, "Questions and
+#                         privacy").
 #
 # The box's own guards (cap, SSM key, Turnstile) mean this workflow grants no
 # secret beyond the OIDC role's own permissions.
@@ -59,6 +64,10 @@ env:
   TF_VAR_loki_push_url: ${{ vars.LOKI_PUSH_URL }}
   TF_VAR_loki_write_token_ssm_path: ${{ vars.LOKI_WRITE_TOKEN_SSM_PATH }}
   TF_VAR_loki_cluster: ${{ vars.LOKI_CLUSTER }}
+  # A number, so an unset variable falls back to the module's default rather
+  # than an empty string Terraform would refuse. "0" is a non-empty string and
+  # is passed through.
+  TF_VAR_question_log_chars: ${{ vars.ASK_QUESTION_LOG_CHARS || '500' }}
 
 concurrency:
   group: deploy-ask

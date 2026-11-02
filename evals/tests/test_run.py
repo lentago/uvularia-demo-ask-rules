@@ -121,3 +121,32 @@ class MissingCorpusIsANoticeNotAFailure(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:
             run.load_bundle("/nonexistent/corpus-latest.json")
         self.assertEqual(cm.exception.code, 3)
+
+
+class SummaryCountsForTelemetry(unittest.TestCase):
+    """--summary-json reports pass/fail counts per golden entry, and only counts."""
+
+    def _run(self, golden):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "summary.json"
+            rc = run.main(["--mode", "dry", "--golden", str(FIXTURES / golden),
+                           "--bundle", str(FIXTURES / "corpus-latest.json"),
+                           "--summary-json", str(out)])
+            return rc, json.loads(out.read_text())
+
+    def test_clean_set_counts_every_entry_passed(self):
+        rc, summary = self._run("golden.good.jsonl")
+        self.assertEqual(rc, 0)
+        self.assertEqual(summary["mode"], "dry")
+        self.assertEqual(summary["failed"], 0)
+        self.assertEqual(summary["passed"], summary["total"])
+        self.assertEqual(set(summary), {"mode", "total", "passed", "failed"})
+
+    def test_bad_set_counts_the_failing_entries(self):
+        rc, summary = self._run("golden.bad-outcome.jsonl")
+        self.assertEqual(rc, 1)
+        self.assertGreater(summary["failed"], 0)
+        self.assertEqual(summary["passed"] + summary["failed"], summary["total"])

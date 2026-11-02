@@ -12,6 +12,7 @@ values is a Terraform apply — a new function version — not a live edit.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 
 
@@ -30,6 +31,20 @@ def _int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _question_log_chars(name: str = "UVULARIA_QUESTION_LOG_CHARS", default: int = 500) -> int:
+    """How much question text to log. A privacy setting, so a value that will not
+    parse keeps none (0) and says so, rather than falling back to the most."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"config: {name}={raw!r} is not a whole number; logging no question text",
+              file=sys.stderr)
+        return 0
 
 
 @dataclass(frozen=True)
@@ -76,6 +91,10 @@ class Config:
     loki_push_url: str = ""
     loki_token_ssm_path: str = ""
     loki_cluster: str = ""
+    # How much of each question the turn log (CloudWatch) and the `asked` event
+    # (Loki) keep, in characters. 500 is also the ceiling; 0 keeps no question
+    # text at all. The question still goes to the model provider in full.
+    question_log_chars: int = 500
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -103,4 +122,5 @@ class Config:
             loki_push_url=os.environ.get("UVULARIA_LOKI_PUSH_URL", "").strip(),
             loki_token_ssm_path=os.environ.get("UVULARIA_LOKI_TOKEN_SSM_PATH", "").strip(),
             loki_cluster=os.environ.get("UVULARIA_LOKI_CLUSTER", "").strip(),
+            question_log_chars=_question_log_chars(),
         )

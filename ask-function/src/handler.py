@@ -1,4 +1,4 @@
-"""The Function URL entrypoint: one POST, one grounded answer, with the guards.
+"""The Function URL entrypoint: one POST, one source-linked answer, with the guards.
 
 Plus one read-only route, ``GET /health``: what the box is serving (the corpus
 digest and the rules tag), whether it is switched on, and how much of today's
@@ -17,14 +17,22 @@ The request path, in order, each guard cheaper than the one it protects:
   4. Turnstile. The bot check (off by default). A failure is a 403.
   5. Cap. One atomic DynamoDB increment; a full day is a 429. This bounds the
      month's model spend no matter what traffic arrives.
-  6. Answer. mitchella's engine replies, the citation gate keeps only the ids it
-     verified against the corpus, and the reply carries which signals degraded.
+  6. Answer. mitchella's engine replies, and its citation gate drops any cited id
+     that is not a record in the corpus. An ``answered`` reply with no source
+     left is not sent as an answer: the reader gets the escalation reply
+     instead (``UNSOURCED_REPLY``). The reply carries which signals degraded.
+
+The gate checks that a cited record exists, not that it says what the answer
+says. The answer is source-linked, not proven; the widget shows the sources and
+asks the reader to check them.
 
 The turn log line goes to stdout (CloudWatch): the outcome, the latency, the cap
-state, and the question truncated to 500 characters. No origin, no IP, no token —
-nothing that identifies who asked. When Loki is configured, the same turn also
-goes out as one ``asked`` event (see ``telemetry.py``), built from an explicit
-field list so nothing identifying can ride along; without it, nothing is sent.
+state, and the question truncated to ``question_log_chars`` (500 at most; 0
+leaves the question out). No origin, no IP, no token — nothing that identifies
+who asked. When Loki is configured, the same turn also goes out as one ``asked``
+event (see ``telemetry.py``), built from an explicit field list so nothing
+identifying can ride along; without it, nothing is sent. The question itself
+always goes to the model provider: that is how the answer is made.
 """
 
 from __future__ import annotations
@@ -40,7 +48,15 @@ from typing import Callable
 from config import Config
 from telemetry import asked_payload, first_subject
 
+# The most of a question the turn log or the ``asked`` event will ever keep.
+# ``Config.question_log_chars`` can lower it, or set it to 0 to keep none.
 QUESTION_LOG_LIMIT = 500
+
+# What the reader gets instead of an ``answered`` reply that cites no real
+# record. It follows step 3 of the rules' instructions.md: do not guess, and
+# say how to ask the organization directly.
+UNSOURCED_REPLY = ("I can't point to a published record that answers that, so I "
+                   "won't guess. Please ask the organization directly.")
 
 
 @dataclass
@@ -109,12 +125,29 @@ def _parse_body(event: dict) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _logged_question(question: str, cfg: Config) -> str | None:
+    """The question as the turn log and the ``asked`` event may keep it: cut to
+    ``cfg.question_log_chars``, never past ``QUESTION_LOG_LIMIT``. None when
+    that is 0 (or less), and the caller then leaves the field out entirely."""
+    limit = min(max(cfg.question_log_chars, 0), QUESTION_LOG_LIMIT)
+    return question[:limit] if limit else None
+
+
+def _log_turn(deps: Deps, record: dict, question: str) -> None:
+    """One turn log line, with the question only as far as the config allows."""
+    logged = _logged_question(question, deps.config)
+    if logged is not None:
+        record["question"] = logged
+    deps.log(record)
+
+
 def _asked(deps: Deps, start: float, kind: str, question: str, deployment, *,
            cap_used=None, cap_remaining=None, degraded=()) -> None:
     """One ``asked`` event for this turn. Best-effort: the pusher never raises.
 
     ``at`` is when the question arrived; ``subject`` is the first of the rules'
-    allowed subjects the question mentions (see ``telemetry.first_subject``).
+    allowed subjects the question mentions (see ``telemetry.first_subject``),
+    matched on the whole question even when none of it is logged.
     """
     deps.emit("asked", asked_payload(
         at=start, kind=kind, latency_ms=round((deps.clock() - start) * 1000),
@@ -122,7 +155,7 @@ def _asked(deps: Deps, start: float, kind: str, question: str, deployment, *,
         digest=getattr(deployment, "resolved_digest", "") or None,
         subject=first_subject(question,
                               getattr(deployment.policy, "allowed_subjects", ())),
-        degraded_signals=degraded, question=question))
+        degraded_signals=degraded, question=_logged_question(question, deps.config)))
 
 
 # --------------------------------------------------------------------------- #
@@ -219,8 +252,7 @@ def handle(event: dict, deps: Deps) -> dict:
 
     # 3. Kill switch — the cheapest, fastest lever, checked before any spend.
     if not policy.enabled:
-        deps.log({"event": "turn", "kind": "maintenance",
-                  "question": question[:QUESTION_LOG_LIMIT]})
+        _log_turn(deps, {"event": "turn", "kind": "maintenance"}, question)
         _asked(deps, now, "maintenance", question, deployment)
         return _reply(200, {"kind": "maintenance", "reply": cfg.maintenance_message,
                             "source_ids": [], "degraded_signals": []}, cfg)
@@ -236,21 +268,20 @@ def handle(event: dict, deps: Deps) -> dict:
     day = time.strftime("%Y-%m-%d", time.gmtime(now))
     allowed, count = deps.cap_reserve(day, cap, now)
     if not allowed:
-        deps.log({"event": "turn", "kind": "capped", "cap": cap,
-                  "question": question[:QUESTION_LOG_LIMIT]})
+        _log_turn(deps, {"event": "turn", "kind": "capped", "cap": cap}, question)
         _asked(deps, now, "capped", question, deployment, cap_used=cap, cap_remaining=0)
         return _reply(429, {"kind": "declined",
                             "reply": "This assistant has answered its limit of questions "
                                      "for today. Please try again tomorrow.",
                             "source_ids": [], "degraded_signals": []}, cfg)
 
-    # 6. Answer. The engine's gate has already dropped any id that is not a real
-    # record, so answer.sources carries only verified citations.
+    # 6. Answer. The engine's gate has already dropped any cited id that is not a
+    # record in the corpus, so answer.sources holds only records that exist.
     try:
         answer = deps.answer_question(deployment.engine, question)
     except SecretUnavailable as exc:
-        deps.log({"event": "turn", "kind": "unconfigured", "error": str(exc),
-                  "question": question[:QUESTION_LOG_LIMIT]})
+        _log_turn(deps, {"event": "turn", "kind": "unconfigured", "error": str(exc)},
+                  question)
         _asked(deps, now, "unconfigured", question, deployment, cap_used=count,
                cap_remaining=max(cap - count, 0), degraded=["api-key"])
         return _reply(503, {"kind": "maintenance",
@@ -259,24 +290,34 @@ def handle(event: dict, deps: Deps) -> dict:
                             "source_ids": [], "degraded_signals": ["api-key"]}, cfg)
     source_ids = [s.doc_id for s in answer.sources]
     degraded = list(answer.degraded_signals)
+    # ``kind`` is what the turn log and the event record; ``reply_kind`` is what
+    # the reader is sent. They differ only for the fallback below, the same way
+    # a capped or unconfigured turn is logged under its own name.
+    kind = reply_kind = answer.kind.value
+    reply = answer.text
 
-    deps.log({
+    # An answer with no real record behind it is never sent as an answer. The
+    # reader gets the escalation reply instead, and the turn is logged as
+    # ``unsourced`` so the operator can see how often it happens.
+    if kind == "answered" and not source_ids:
+        kind, reply_kind, reply = "unsourced", "escalated", UNSOURCED_REPLY
+
+    _log_turn(deps, {
         "event": "turn",
-        "kind": answer.kind.value,
+        "kind": kind,
         "latency_ms": round((deps.clock() - now) * 1000),
         "cap_used": count,
         "cap_remaining": max(cap - count, 0),
         "digest": deployment.resolved_digest,
         "source_ids": source_ids,
         "degraded_signals": degraded,
-        "question": question[:QUESTION_LOG_LIMIT],
-    })
-    _asked(deps, now, answer.kind.value, question, deployment, cap_used=count,
+    }, question)
+    _asked(deps, now, kind, question, deployment, cap_used=count,
            cap_remaining=max(cap - count, 0), degraded=degraded)
 
     return _reply(200, {
-        "kind": answer.kind.value,
-        "reply": answer.text,
+        "kind": reply_kind,
+        "reply": reply,
         "source_ids": source_ids,
         "degraded_signals": degraded,
     }, cfg)
