@@ -1,0 +1,28 @@
+# template-update: where this repository's later template changes come from,
+# and what an update must never touch.
+#
+# This file is yours. An update never changes it, so edit the keep list freely.
+# scripts/template-update.py reads it; .github/workflows/template-update.yml
+# runs that script once a week and opens a pull request for you to review.
+
+# The template this repository was made from, and the branch to follow.
+source = "lentago/uvularia-rules-template"
+branch = "main"
+
+# Paths that are yours alone. An update never adds, changes or removes anything
+# here. A path ending in "/" is a whole folder. Everything else follows the
+# template, and where you have changed a file the template also changed, the
+# two are merged line by line in the pull request.
+#
+# The rules below are decisions about how your Ask box behaves, so the template
+# never changes them for you: a new setting it adds is optional and its default
+# applies until you set it. The ask-function/ folder you copied in for the Ask
+# box is not part of this template, so an update never touches it either.
+keep = [
+  "policy.yaml",         # topics, refusals, model, daily cap, kill switch
+  "instructions.md",     # what the Ask box is told
+  "signals/",            # your incidents
+  "evals/golden.jsonl",  # your golden questions
+  ".github/CODEOWNERS",  # your reviewers
+  "LICENSE",
+]

@@ -1,0 +1,151 @@
+# ============================================================================
+# template-update — bring the template's later changes in, as a pull request
+# ============================================================================
+# This repository started as a copy of a template. Once a week, and whenever
+# you run it from the Actions tab, this workflow:
+#
+#   1. stops if an update pull request is already open (one at a time: merge
+#      or close it and the next run opens a fresh one);
+#   2. runs scripts/template-update.py, which fetches the template named in
+#      .github/template-update.toml and makes its changes since your last
+#      update here, leaving alone every path on that file's `keep` list;
+#   3. with your token, commits that to a branch and opens a pull request.
+#      Your checks run on it, and nothing changes until you merge it. When the
+#      same lines changed on both sides, the pull request opens as a draft and
+#      says which files need you. If you closed the pull request for this same
+#      template commit before, it is not offered again;
+#   4. without your token, opens (or updates) one issue saying an update is
+#      waiting and how to set the token up. The run stays green: a missing
+#      token is a setup step, not a failure.
+#
+# Why a token of yours: the built-in workflow token cannot change files under
+# .github/workflows/, and pull requests it opens do not run your checks. The
+# secret TEMPLATE_UPDATE_TOKEN is a fine-grained personal access token for
+# this repository only, with Contents, Pull requests and Workflows set to read
+# and write. It is used for the push and the pull request, nowhere else.
+#
+# In the template repository itself the script sees that it is the template
+# and does nothing.
+# ============================================================================
+
+name: template-update
+
+on:
+  schedule:
+    - cron: '17 9 * * 1'   # Mondays, 09:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read   # is an update pull request already open?
+  issues: write         # the "update waiting" issue, only when no token is set
+
+concurrency:
+  group: template-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TOKEN_SET: ${{ secrets.TEMPLATE_UPDATE_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0              # the first update finds its base in your first commit
+          persist-credentials: false  # the push below uses your token explicitly
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Is an update pull request already open?
+        id: open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n="$(gh pr list -R "$GITHUB_REPOSITORY" --state open --json number,headRefName \
+                 -q '[.[] | select(.headRefName | startswith("template-update/"))][0].number // empty')"
+          echo "number=$n" >> "$GITHUB_OUTPUT"
+          if [ -n "$n" ]; then
+            echo "::notice title=template-update::Update pull request #$n is still open. Merge or close it; the next run opens a fresh one."
+          fi
+
+      - name: Bring the template's changes into this checkout
+        if: steps.open.outputs.number == ''
+        id: update
+        run: |
+          python3 scripts/template-update.py \
+            --body "$RUNNER_TEMP/body.md" --issue-body "$RUNNER_TEMP/issue.md"
+
+      - name: Open the pull request with your token
+        if: steps.update.outputs.changed == 'true' && env.TOKEN_SET == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.TEMPLATE_UPDATE_TOKEN }}
+          SOURCE: ${{ steps.update.outputs.source }}
+          SHORT: ${{ steps.update.outputs.short }}
+          ATTENTION: ${{ steps.update.outputs.attention }}
+        run: |
+          branch="template-update/${SHORT}"
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          gh auth setup-git   # git asks gh for the token, which reads it from GH_TOKEN
+          # Exit 0: the branch exists. Exit 2: it does not. Anything else: we could not
+          # ask, so stop rather than guess.
+          if seen="$(git ls-remote --exit-code --heads "$remote" "refs/heads/${branch}")"; then
+            rc=0
+          else
+            rc=$?
+          fi
+          if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then
+            echo "::error title=template-update::Could not read this repository's branches (git ls-remote exit ${rc}). TEMPLATE_UPDATE_TOKEN may have expired, or lacks Contents read on this repository."
+            exit 1
+          fi
+          lease=()
+          if [ "$rc" = 0 ]; then
+            # The branch for this template commit exists. If it has a pull request,
+            # that was closed without merging: you said no to this update. Leave the
+            # branch, and anything you pushed to it, alone; the next template change
+            # opens a new one. With no pull request, an earlier run stopped after its
+            # push and nobody was ever offered it: replace it with this run's update,
+            # but only if it still holds exactly what we just saw.
+            prior="$(gh pr list -R "$GITHUB_REPOSITORY" --head "$branch" --state all \
+                       --json number -q '.[0].number // empty')"
+            if [ -n "$prior" ]; then
+              echo "::notice title=template-update::This update was offered in #${prior}, which was closed without merging, so it is not offered again. Delete the branch ${branch} to be offered it again."
+              exit 0
+            fi
+            echo "::notice title=template-update::${branch} was pushed by an earlier run that stopped before opening its pull request; replacing it with this run's update."
+            lease=("--force-with-lease=refs/heads/${branch}:${seen%%[[:space:]]*}")
+          fi
+          git switch --quiet -c "$branch"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit --quiet -m "Template update: ${SOURCE}@${SHORT}"
+          if ! git push --quiet "${lease[@]}" "$remote" "HEAD:refs/heads/${branch}"; then
+            echo "::error title=template-update::The push was refused. TEMPLATE_UPDATE_TOKEN may have expired, or lacks Contents and Workflows write on this repository. Make a new one (see the header of this workflow) and run template-update again."
+            exit 1
+          fi
+          title="Template update: ${SOURCE}@${SHORT}"
+          draft=()
+          if [ "$ATTENTION" != "0" ]; then
+            draft=(--draft)
+            title="${title} (${ATTENTION} file(s) need you)"
+          fi
+          gh pr create -R "$GITHUB_REPOSITORY" --head "$branch" "${draft[@]}" \
+            --title "$title" --body-file "$RUNNER_TEMP/body.md"
+
+      - name: No token yet — say an update is waiting, in one issue
+        if: steps.update.outputs.changed == 'true' && env.TOKEN_SET != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Template update waiting"
+          n="$(gh issue list -R "$GITHUB_REPOSITORY" --state open --json number,title \
+                 -q "[.[] | select(.title == \"${title}\")][0].number // empty")"
+          if [ -n "$n" ]; then
+            gh issue edit "$n" -R "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/issue.md"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/issue.md"
+          fi
+          echo "::notice title=template-update::An update is waiting. Set the secret TEMPLATE_UPDATE_TOKEN to receive it as a pull request; the issue says how."
