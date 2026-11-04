@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -54,6 +55,10 @@ CONFIG = ".github/template-update.toml"
 BASE_FILE = ".github/template-base"
 ALWAYS_KEEP = (CONFIG, BASE_FILE)
 NEW_REF = "refs/template-update/new"
+RESTART = (f"Deleting {BASE_FILE} makes the next run compare against the template commit "
+           "this repository was made from, which still merges your changes. If it cannot "
+           "find that commit either, it replaces each template file you changed and lists "
+           "them in a draft pull request for you to check.")
 
 
 class UpdateError(Exception):
@@ -103,14 +108,16 @@ def load_config(root: Path) -> Config:
 
 
 def read_base(root: Path) -> str | None:
+    """The recorded base: None only when there is no base file at all. A file with
+    no commit line in it comes back as "", which the caller treats as damaged."""
     p = root / BASE_FILE
-    if not p.is_file():
+    if not p.exists():
         return None
     for line in p.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
             return line
-    return None
+    return ""
 
 
 def base_text(source: str, sha: str) -> str:
@@ -206,6 +213,11 @@ def plan(root: Path, cfg: Config, new: str, base: str | None, base_how: str) -> 
     new_t = tree(root, new)
     base_t = tree(root, base) if base else {}
     head_t = tree(root, "HEAD")
+    in_the_way = [p for p in new_t if p not in head_t and not cfg.kept(p)
+                  and ((root / p).exists() or (root / p).is_symlink())]
+    if in_the_way:
+        raise UpdateError("these files are not committed but sit where the template has a "
+                          "file; move them aside or commit them first: " + ", ".join(in_the_way))
 
     for path in sorted(set(base_t) | set(new_t)):
         b, n, h = base_t.get(path), new_t.get(path), head_t.get(path)
@@ -368,13 +380,22 @@ def run(root: Path, template_url: str | None, dry_run: bool, body: Path | None,
     git("fetch", "--quiet", "--no-tags", url, f"+refs/heads/{cfg.branch}:{NEW_REF}", root=root)
     new = git("rev-parse", NEW_REF, root=root)
 
+    # A recorded base that is damaged or cannot be fetched stops the run. Guessing
+    # would turn a three-way update into an overwrite of your changes.
     base, how = read_base(root), "recorded"
-    if base and not have_commit(root, base):
-        subprocess.run(["git", "fetch", "--quiet", "--no-tags", url, base], cwd=root,
-                       capture_output=True)
+    if base is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}", base):
+            raise UpdateError(f"{BASE_FILE} holds {base!r}, not a commit id. Put back the "
+                              f"line it had (git log -p {BASE_FILE}). {RESTART}")
         if not have_commit(root, base):
-            base, how = None, f"the recorded base {base[:7]} is not in the template's history"
-    elif base is None:
+            r = subprocess.run(["git", "fetch", "--quiet", "--no-tags", url, base], cwd=root,
+                               capture_output=True)
+            if not have_commit(root, base):
+                raise UpdateError(
+                    f"the recorded base {base[:7]} could not be fetched from {url} "
+                    f"({r.stderr.decode().strip() or 'not in its history'}). If the template "
+                    f"was unreachable, run this again. If its history was rewritten: {RESTART}")
+    else:
         base = infer_base(root, new)
         how = "inferred" if base else ("this repository's first commit does not match "
                                        "any commit of the template")

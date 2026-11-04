@@ -88,20 +88,41 @@ jobs:
           ATTENTION: ${{ steps.update.outputs.attention }}
         run: |
           branch="template-update/${SHORT}"
-          # A branch for this template commit already exists only if you closed its
-          # pull request without merging: you said no to this update. Leave it, and
-          # anything you pushed to it, alone; the next template change opens a new one.
-          if gh api "repos/${GITHUB_REPOSITORY}/branches/${branch}" --silent 2>/dev/null; then
-            echo "::notice title=template-update::${branch} already exists, so this update was offered before and its pull request closed. Delete that branch to be offered it again."
-            exit 0
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          gh auth setup-git   # git asks gh for the token, which reads it from GH_TOKEN
+          # Exit 0: the branch exists. Exit 2: it does not. Anything else: we could not
+          # ask, so stop rather than guess.
+          if seen="$(git ls-remote --exit-code --heads "$remote" "refs/heads/${branch}")"; then
+            rc=0
+          else
+            rc=$?
+          fi
+          if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then
+            echo "::error title=template-update::Could not read this repository's branches (git ls-remote exit ${rc}). TEMPLATE_UPDATE_TOKEN may have expired, or lacks Contents read on this repository."
+            exit 1
+          fi
+          lease=()
+          if [ "$rc" = 0 ]; then
+            # The branch for this template commit exists. If it has a pull request,
+            # that was closed without merging: you said no to this update. Leave the
+            # branch, and anything you pushed to it, alone; the next template change
+            # opens a new one. With no pull request, an earlier run stopped after its
+            # push and nobody was ever offered it: replace it with this run's update,
+            # but only if it still holds exactly what we just saw.
+            prior="$(gh pr list -R "$GITHUB_REPOSITORY" --head "$branch" --state all \
+                       --json number -q '.[0].number // empty')"
+            if [ -n "$prior" ]; then
+              echo "::notice title=template-update::This update was offered in #${prior}, which was closed without merging, so it is not offered again. Delete the branch ${branch} to be offered it again."
+              exit 0
+            fi
+            echo "::notice title=template-update::${branch} was pushed by an earlier run that stopped before opening its pull request; replacing it with this run's update."
+            lease=("--force-with-lease=refs/heads/${branch}:${seen%%[[:space:]]*}")
           fi
           git switch --quiet -c "$branch"
           git -c user.name="github-actions[bot]" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               commit --quiet -m "Template update: ${SOURCE}@${SHORT}"
-          gh auth setup-git   # git asks gh for the token, which reads it from GH_TOKEN
-          if ! git push --quiet "https://github.com/${GITHUB_REPOSITORY}.git" \
-                 "HEAD:refs/heads/${branch}"; then
+          if ! git push --quiet "${lease[@]}" "$remote" "HEAD:refs/heads/${branch}"; then
             echo "::error title=template-update::The push was refused. TEMPLATE_UPDATE_TOKEN may have expired, or lacks Contents and Workflows write on this repository. Make a new one (see the header of this workflow) and run template-update again."
             exit 1
           fi
